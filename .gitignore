@@ -1,0 +1,36 @@
+# ── Compiled binary (root-level only, not cmd/inframapper/) ──
+/inframapper
+/inframapper-linux
+/inframapper-darwin
+/inframapper-windows
+/inframapper.exe
+*.exe
+*.out
+
+# ── Scan output ───────────────────────────────────────────────
+output/
+
+# ── Credentials ───────────────────────────────────────────────
+.sec
+*.sec
+.env
+*.env
+secrets/
+credentials/
+
+# ── Go build cache ────────────────────────────────────────────
+vendor/
+
+# ── OS / editor artifacts ────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Test artifacts ────────────────────────────────────────────
+*.test
+coverage.out
+coverage.html
