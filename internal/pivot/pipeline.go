@@ -20,9 +20,16 @@ type WebPusher interface {
 	Push(result *model.PipelineResult)
 }
 
+// StoreSaver adalah interface untuk persistensi sinyal attribution lintas-scan.
+// Implementasinya ada di internal/store. Boleh nil — fitur attribution di-skip jika nil.
+type StoreSaver interface {
+	SaveScan(result *model.PipelineResult) error
+}
+
 // Run adalah entry point pipeline InfraMapper.
 // webSrv boleh nil — jika tidak nil, hasil tiap layer di-push ke Neural Graph UI.
-func Run(ctx context.Context, cfg model.Config, webSrv WebPusher) (*model.PipelineResult, error) {
+// storeSaver boleh nil — jika tidak nil, sinyal scan disimpan untuk attribution.
+func Run(ctx context.Context, cfg model.Config, webSrv WebPusher, storeSaver StoreSaver) (*model.PipelineResult, error) {
 	result := &model.PipelineResult{
 		Target:    cfg.Target,
 		StartedAt: time.Now(),
@@ -103,11 +110,12 @@ func Run(ctx context.Context, cfg model.Config, webSrv WebPusher) (*model.Pipeli
 
 	// Step 3b: Shodan + FOFA paralel
 	type l3Result struct {
-		shodanNewIPs  []string
-		shodanHits    int
-		fofaNewIPs    []string
-		fofaHits      int
-		fofaCertDoms  []string
+		shodanNewIPs   []string
+		shodanHits     int
+		fofaNewIPs     []string
+		fofaNewIPInfos []layer.FOFANewIPInfo // enriched: IP + FaviconHash/JARM yang menemukannya
+		fofaHits       int
+		fofaCertDoms   []string
 	}
 	l3Ch := make(chan l3Result, 1)
 
@@ -143,6 +151,7 @@ func Run(ctx context.Context, cfg model.Config, webSrv WebPusher) (*model.Pipeli
 			mu3.Lock()
 			r.fofaHits = fr.Hits
 			r.fofaNewIPs = fr.NewIPs
+			r.fofaNewIPInfos = fr.NewIPInfos
 			r.fofaCertDoms = fr.CertDomains
 			mu3.Unlock()
 		}()
@@ -156,6 +165,54 @@ func Run(ctx context.Context, cfg model.Config, webSrv WebPusher) (*model.Pipeli
 	result.Stats.L3FOFAHits = l3.fofaHits
 	result.Stats.L3FOFANewIPs = len(l3.fofaNewIPs)
 	result.Stats.L3FOFACertDoms = len(l3.fofaCertDoms)
+
+	// ── FOFA new IP → Asset backfill ──────────────────────────────────────────
+	// IP yang ditemukan FOFA via icon_hash pivot dikonversi ke *model.Asset
+	// dengan FaviconHash + JARM yang dipakai untuk menemukannya.
+	// Tanpa ini, IP tersebut tidak punya sinyal di ATTR graph dan tidak muncul
+	// di favicon_hash / jarm hub meski secara faktual berbagi fingerprint yang sama.
+	existingIPSet := make(map[string]bool, len(allAssets))
+	for _, a := range allAssets {
+		if a.IP != "" {
+			existingIPSet[a.IP] = true
+		}
+		if a.Host != "" {
+			existingIPSet[a.Host] = true
+		}
+	}
+	for _, info := range l3.fofaNewIPInfos {
+		if existingIPSet[info.IP] {
+			// IP sudah ada di allAssets — pastikan FaviconHash ter-backfill
+			for _, a := range allAssets {
+				if (a.IP == info.IP || a.Host == info.IP) && a.FaviconHash == "" && info.FaviconHash != "" {
+					a.FaviconHash = info.FaviconHash
+				}
+			}
+			continue
+		}
+		existingIPSet[info.IP] = true
+		newAsset := &model.Asset{
+			Host:         info.IP,
+			IP:           info.IP,
+			Source:       model.SourceFOFA,
+			Alive:        true, // FOFA confirmed responsive
+			FaviconHash:  info.FaviconHash,
+			DiscoveredAt: time.Now(),
+		}
+		if info.JARM != "" {
+			newAsset.TLSCert = &model.TLSInfo{JARM: info.JARM}
+		}
+		if info.ASN != "" || info.Country != "" {
+			newAsset.FOFAData = &model.FOFAResult{
+				IconHash: info.FaviconHash,
+				JARM:     info.JARM,
+				ASN:      info.ASN,
+				Country:  info.Country,
+			}
+		}
+		allAssets = append(allAssets, newAsset)
+		log.Printf("[pipeline] L3 FOFA new IP asset: %s (favicon=%s)", info.IP, info.FaviconHash)
+	}
 
 	// Gabungkan semua new IPs dari Shodan + FOFA untuk trigger L5
 	shodanNewIPs := append(l3.shodanNewIPs, l3.fofaNewIPs...)
@@ -310,6 +367,15 @@ func Run(ctx context.Context, cfg model.Config, webSrv WebPusher) (*model.Pipeli
 
 	// Final push ke UI dengan cluster info lengkap
 	webPush(webSrv, result)
+
+	// Attribution: simpan sinyal ke store jika aktif
+	if storeSaver != nil {
+		if err := storeSaver.SaveScan(result); err != nil {
+			log.Printf("[pipeline] attribution store save error (non-fatal): %v", err)
+		} else if cfg.Verbose {
+			log.Printf("[pipeline] attribution signals saved for %s", cfg.Target)
+		}
+	}
 
 	log.Printf("=== Pipeline selesai dalam %s ===", result.FinishedAt.Sub(result.StartedAt).Round(time.Second))
 

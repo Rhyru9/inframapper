@@ -56,6 +56,11 @@ type Config struct {
 	// Optional enrichment (berjalan setelah pipeline selesai, non-blocking)
 	WaybackEnable bool
 
+	// Attribution store (cross-target signal correlation)
+	StoreEnabled  bool    // aktifkan persistensi sinyal attribution
+	StorePath     string  // path ke file JSON store
+	MinConfidence float64 // minimum confidence untuk korelasi ditampilkan di graph
+
 	// Verbosity
 	Verbose bool
 	Debug   bool
@@ -85,5 +90,7 @@ func DefaultConfig() Config {
 		OutputDir:        "./output",
 		OutputFormat:     []string{"json", "markdown"},
 		StorageType:      "sqlite",
+		StorePath:        "./inframapper_attr.json",
+		MinConfidence:    0.15,
 	}
 }

@@ -69,7 +69,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   background: var(--bg) !important;
 }
 
-/* CartoDB Dark Matter is already dark — no filter needed, just slight contrast boost */
+/* Override Leaflet tile layer for dark theme */
 .leaflet-tile-pane { filter: contrast(1.05) brightness(1.0); }
 .leaflet-container { background: #06090f !important; }
 
@@ -140,7 +140,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .nc-body::-webkit-scrollbar { width: 3px; }
 .nc-body::-webkit-scrollbar-thumb { background: var(--bdr2); border-radius: 2px; }
 .nc-sec { display: flex; flex-direction: column; }
-.nc-sec + .nc-sec { border-top: 1px solid rgba(26,44,68,0.55); padding-top: 9px; }
+.nc-sec + .nc-sec { border-top: 1px solid rgba(26,44,68,0.55); padding-top: 9px; margin-top: 0; }
 .nc-row { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; gap: 8px; }
 .nc-k { font-size: 8px; color: var(--tx3); text-transform: uppercase; letter-spacing: .1em; flex-shrink: 0; }
 .nc-v {
@@ -279,7 +279,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   background-size: 54px 54px;
 }
 
-/* ── LEAFLET TOOLTIP (map node hover) ────────────────────── */
+/* ── LEAFLET TOOLTIP ─────────────────────────────────────── */
 .nm-tooltip {
   background: rgba(4,7,12,0.94) !important;
   border: 1px solid #1a2c44 !important;
@@ -293,5 +293,29 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 }
 .nm-tooltip::before { display: none !important; }
 
-/* ── COUNTRY GROUP LABELS ────────────────────────────────── */
-.leaflet-zoom-anim .leaflet-zoom-animated { will-change: transform; }
+/* ── ATTR MODE (cross-target attribution graph) ──────────── */
+#attr-canvas {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  display: none; cursor: default;
+  background: var(--bg);
+}
+.attr-empty {
+  position: absolute; left: 50%;
+  top: 50%;
+  transform: translateX(-50%);
+  font-size: 11px; color: var(--tx3);
+  text-align: center; pointer-events: none;
+  line-height: 2.4; display: none;
+  max-width: 380px; z-index: 10;
+}
+#attr-info {
+  position: absolute; bottom: 14px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(6,9,15,0.90);
+  border: 1px solid var(--bdr); border-radius: 5px;
+  padding: 5px 18px; font-size: 9px; color: var(--tx2);
+  display: none; z-index: 550;
+  letter-spacing: .08em; pointer-events: none; white-space: nowrap;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}

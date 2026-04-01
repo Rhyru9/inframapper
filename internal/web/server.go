@@ -20,10 +20,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/yourusername/inframapper/internal/model"
+	"github.com/yourusername/inframapper/internal/store"
 )
 
 // Server adalah Layer 8 web server.
@@ -33,6 +35,7 @@ type Server struct {
 	graph   *GraphData
 	clients map[chan []byte]struct{}
 	srv     *http.Server
+	store   *store.Store // optional; nil jika attribution tidak aktif
 }
 
 // New membuat Server baru untuk port yang diberikan.
@@ -41,6 +44,12 @@ func New(port int) *Server {
 		port:    port,
 		clients: make(map[chan []byte]struct{}),
 	}
+}
+
+// SetStore menghubungkan attribution store ke server.
+// Dipanggil dari main.go sebelum Start() jika --store aktif.
+func (s *Server) SetStore(st *store.Store) {
+	s.store = st
 }
 
 // Start menjalankan HTTP server di background. Non-blocking.
@@ -61,6 +70,8 @@ func (s *Server) Start(ctx context.Context) error {
 		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write([]byte(staticJS))
 	})
+	mux.HandleFunc("/api/attribution", s.handleAPIAttribution)
+	mux.HandleFunc("/api/targets", s.handleAPITargets)
 
 	s.srv = &http.Server{Addr: fmt.Sprintf(":%d", s.port), Handler: mux}
 
@@ -126,6 +137,42 @@ func (s *Server) handleAPIGraph(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(g)
+}
+
+func (s *Server) handleAPIAttribution(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if s.store == nil {
+		_, _ = w.Write([]byte(`{"error":"attribution store not enabled (run with --store flag)","nodes":[],"edges":[],"total_scans":0,"total_targets":0}`))
+		return
+	}
+
+	minConf := 0.15
+	if q := r.URL.Query().Get("min_confidence"); q != "" {
+		if v, err := strconv.ParseFloat(q, 64); err == nil {
+			minConf = v
+		}
+	}
+
+	g := s.store.GetAttributionGraph(minConf)
+	_ = json.NewEncoder(w).Encode(g)
+}
+
+func (s *Server) handleAPITargets(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if s.store == nil {
+		_, _ = w.Write([]byte(`[]`))
+		return
+	}
+
+	targets := s.store.GetTargets()
+	if targets == nil {
+		targets = []store.TargetSummary{}
+	}
+	_ = json.NewEncoder(w).Encode(targets)
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +256,7 @@ type GraphNode struct {
 	Pivot        string   `json:"pivot"`
 	Orphan       bool     `json:"orphan"`
 	FaviconHash  string   `json:"favicon_hash,omitempty"`
+	HeaderHash   string   `json:"header_hash,omitempty"`
 	JARM         string   `json:"jarm,omitempty"`
 	Tags         []string `json:"tags,omitempty"`
 	Score        float64  `json:"score"`
@@ -264,9 +312,15 @@ func BuildGraph(result *model.PipelineResult) *GraphData {
 			FaviconHash: a.FaviconHash,
 			HTTPS:       a.HTTPS,
 		}
-		if a.FOFAData != nil && a.FOFAData.JARM != "" {
-			node.JARM = a.FOFAData.JARM
-		} else if a.TLSCert != nil {
+		if a.FOFAData != nil {
+			if a.FOFAData.JARM != "" {
+				node.JARM = a.FOFAData.JARM
+			}
+			if a.FOFAData.HeaderHash != "" {
+				node.HeaderHash = a.FOFAData.HeaderHash
+			}
+		}
+		if node.JARM == "" && a.TLSCert != nil {
 			node.JARM = a.TLSCert.JARM
 		}
 		for _, t := range a.Tags {

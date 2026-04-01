@@ -41,8 +41,8 @@ let dragging = null, dragOff = {x:0,y:0};
 // 3D state
 let pts3 = [], rot3 = {ax:0.2, ay:0, vx:0, vy:0.003};
 let drag3 = false, drag3Moved = false, last3 = {x:0,y:0}, pending3 = null;
-let zoom3 = 1.0;          // 3D zoom level (scroll wheel / pinch)
-let pinchDist3 = 0;       // last pinch distance for touch zoom
+let zoom3 = 1.0;
+let pinchDist3 = 0;
 
 // Canvas refs
 let overlayCanvas, overlayCtx, W2, H2; // overlay on leaflet
@@ -122,6 +122,7 @@ function initFromData(data, fromCache) {
   addLog('geo: ' + nodes.filter(n=>n.lat&&n.lon).length + ' geolocated, ' + nodes.filter(n=>n.orphan).length + ' orphans');
 
   if (mode === 'map') renderLeafletMarkers();
+  if (mode === 'attr') buildAttrFromScan();
 }
 
 function updateHUD() {
@@ -153,7 +154,6 @@ function setText(id, val) {
 // ── FILTERS ──────────────────────────────────────────────────
 function applyFilters() {
   nodes.forEach(n => {
-    // Orphan-only mode: show ALL orphans regardless of pivot filter, hide everything else
     if (showOrphansOnly) { n.visible = !!n.orphan; return; }
     if (activeFilters.has('all')) { n.visible = true; return; }
     n.visible = activeFilters.has(n.pivot || 'default') || n.id === 0;
@@ -231,13 +231,14 @@ function selectNode(n) {
   ncSet('nc-port',    n.port ? ':' + n.port + (n.https ? ' https' : ' http') : '—', '');
   ncSet('nc-pivot',   n.pivot || '—', '');
   ncSet('nc-cluster', n.cluster_label || n.cluster || '—', '');
+  ncSet('nc-asn',     n.asn || '—', '');
   ncSet('nc-jarm',    n.jarm ? n.jarm.slice(0,16) + '…' : '—', '');
 
   // Geo
-  ncSet('nc-country', [n.country, n.city].filter(Boolean).join(' · ') || '—', '');
-  ncSet('nc-asn',     n.asn || '—', '');
-  ncSet('nc-geo',     (n.lat && n.lon) ? n.lat.toFixed(2) + ', ' + n.lon.toFixed(2) : '—', '');
-  ncSet('nc-source',  n.source || '—', '');
+  const geoStr = (n.lat && n.lon) ? n.lat.toFixed(2) + ', ' + n.lon.toFixed(2) : '—';
+  ncSet('nc-country',  [n.country, n.city].filter(Boolean).join(' · ') || '—', '');
+  ncSet('nc-geo',      geoStr, '');
+  ncSet('nc-source',   n.source || '—', '');
 
   // Badges
   const bdg = document.getElementById('nc-badges');
@@ -298,7 +299,8 @@ function initLeafletMap() {
     preferCanvas: true
   });
 
-  // CartoDB Dark Matter — native dark with visible country borders
+  // OpenStreetMap tile — dark-filtered via CSS
+  // CartoDB Dark Matter — native dark map, white labels, visible borders
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 19,
     subdomains: ['a','b','c','d']
@@ -380,9 +382,7 @@ function latLonToCanvas(lat, lon) {
   return { x: point.x, y: point.y };
 }
 
-// ── COUNTRY RELATION GROUPS ──────────────────────────────────
-// Groups nodes by country, draws a translucent halo + label
-// for any country that has 2+ visible geolocated nodes.
+// Country relation groups — translucent halo + label for countries with 2+ nodes
 function drawCountryGroups() {
   if (!overlayCtx || !leafletMap) return;
   const byCC = {};
@@ -392,21 +392,17 @@ function drawCountryGroups() {
   });
   Object.entries(byCC).forEach(([cc, grp]) => {
     if (grp.length < 2) return;
-    // Centroid in lat/lon space
     const clat = grp.reduce((s, n) => s + n.lat, 0) / grp.length;
     const clon = grp.reduce((s, n) => s + n.lon, 0) / grp.length;
     const cp = latLonToCanvas(clat, clon);
-    // Max pixel radius to encompass all nodes
     let maxR = 30;
     grp.forEach(n => {
       const p = latLonToCanvas(n.lat, n.lon);
       const d = Math.hypot(p.x - cp.x, p.y - cp.y);
       if (d + 22 > maxR) maxR = d + 22;
     });
-    // Color by dominant pivot type
     const dominant = grp.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     const col = PC[dominant.pivot] || PC.default;
-    // Dashed circle halo
     overlayCtx.save();
     overlayCtx.beginPath();
     overlayCtx.arc(cp.x, cp.y, maxR, 0, Math.PI * 2);
@@ -417,7 +413,6 @@ function drawCountryGroups() {
     overlayCtx.setLineDash([5, 7]);
     overlayCtx.stroke();
     overlayCtx.setLineDash([]);
-    // Country label above halo
     overlayCtx.font = 'bold 10px JetBrains Mono, monospace';
     overlayCtx.textAlign = 'center';
     overlayCtx.shadowColor = col;
@@ -435,7 +430,6 @@ function drawLeafletOverlay() {
   if (!overlayCtx || !leafletMap) return;
   overlayCtx.clearRect(0, 0, W2, H2);
   arcPhase += 0.018;
-  // Country relation groups — drawn behind edges/nodes
   drawCountryGroups();
 
   const visNodes = nodes.filter(n => n.visible && n.lat && n.lon);
@@ -472,7 +466,7 @@ function drawLeafletOverlay() {
     overlayCtx.stroke();
     overlayCtx.setLineDash([]);
 
-    // Travelling dot along arc — brighter with glow
+    // Travelling dot along arc — glowing
     const t = (Math.sin(arcPhase * 0.6 + e.source * 0.4) * 0.5 + 0.5);
     const bx = (1-t)*(1-t)*pa.x + 2*(1-t)*t*cpx + t*t*pb.x;
     const by = (1-t)*(1-t)*pa.y + 2*(1-t)*t*cpy + t*t*pb.y;
@@ -540,8 +534,8 @@ function drawLeafletOverlay() {
   // No-geo nodes: cluster bottom-left corner
   const noGeo = nodes.filter(n => n.visible && (!n.lat || !n.lon));
   if (noGeo.length > 0) {
-    overlayCtx.font = 'bold 9px JetBrains Mono, monospace';
-    overlayCtx.fillStyle = '#7a9abb';
+    overlayCtx.font = '9px JetBrains Mono, monospace';
+    overlayCtx.fillStyle = '#5a7a9a'; // BUG FIX: was #2e4a68 — too dark, invisible on dark bg
     overlayCtx.fillText('no-geo: ' + noGeo.length, 16, H2 - 80);
     noGeo.forEach((n, i) => {
       const nx = 16 + (i % 10) * 16;
@@ -644,8 +638,9 @@ function draw2D() {
 // ── 3D GLOBE ─────────────────────────────────────────────────
 function build3D() {
   const GLOBE_R = 200;
-  const GOLDEN  = Math.PI * (3 - Math.sqrt(5));
+  const GOLDEN  = Math.PI * (3 - Math.sqrt(5)); // golden angle ≈137.5°
 
+  // Count nodes per lat/lon bucket (1° resolution)
   const locCount = {}, locUsed = {};
   nodes.forEach(n => {
     if (!n.lat || !n.lon) return;
@@ -663,17 +658,23 @@ function build3D() {
 
       let phi   = (90 - n.lat) * Math.PI / 180;
       let theta = (n.lon + 180) * Math.PI / 180;
+
+      // Fibonacci/golden-angle spiral spread for co-located nodes.
+      // Node 0 at centre, rest spiral outward — avoids stacking.
       if (idx > 0) {
         const jAngle  = idx * GOLDEN;
-        const jRadius = Math.sqrt(idx / cnt) * 0.22;
+        const jRadius = Math.sqrt(idx / cnt) * 0.22; // radians, grows with sqrt
         phi   += Math.cos(jAngle) * jRadius;
         theta += Math.sin(jAngle) * jRadius;
+        // keep phi in valid range
         phi = Math.max(0.04, Math.min(Math.PI - 0.04, phi));
       }
+
       ox = GLOBE_R * Math.sin(phi) * Math.cos(theta);
       oy = GLOBE_R * Math.cos(phi);
       oz = GLOBE_R * Math.sin(phi) * Math.sin(theta);
     } else {
+      // No-geo nodes: Fibonacci sphere surface at slightly smaller radius
       const t     = i / Math.max(nodes.length - 1, 1);
       const phi   = Math.acos(1 - 2 * t);
       const theta = i * GOLDEN;
@@ -699,15 +700,10 @@ function proj3(x, y, z) {
 function draw3D() {
   mainCtx.clearRect(0, 0, W, H);
   if (!drag3) {
-    rot3.ay += rot3.vy;
-    rot3.ax += rot3.vx * 0.4;
-    // Smooth inertia decay — feel weighty, not snappy
-    rot3.vy *= 0.974;
-    rot3.vx *= 0.974;
-    // Keep a gentle auto-rotation when user is idle
+    rot3.ay += rot3.vy; rot3.ax += rot3.vx * 0.4;
+    rot3.vy *= 0.974; rot3.vx *= 0.974;
     if (Math.abs(rot3.vy) < 0.0008) rot3.vy += 0.0004;
   }
-  // Clamp tilt to prevent gimbal flip
   rot3.ax = Math.max(-1.45, Math.min(1.45, rot3.ax));
 
   const proj = pts3.map(p => {
@@ -749,8 +745,10 @@ function draw3D() {
     const n = p.n;
     n.pulse = (n.pulse||0) + 0.028;
     const isSel = n === selected;
+    // Smaller, tighter dots — sc already encodes depth perspective
     const r2 = Math.max(2, n.r * p.sc * 1.1 + Math.sin(n.pulse) * p.sc * 0.35);
 
+    // Subtle glow — only for selected or seed node
     if (isSel || n.id === 0) {
       const glowR = r2 * (isSel ? 3.5 : 2.2);
       const g3 = mainCtx.createRadialGradient(p.px, p.py, 0, p.px, p.py, glowR);
@@ -758,10 +756,12 @@ function draw3D() {
       mainCtx.fillStyle = g3; mainCtx.beginPath(); mainCtx.arc(p.px, p.py, glowR, 0, Math.PI*2); mainCtx.fill();
     }
 
+    // Solid dot
     mainCtx.fillStyle   = n.color + (isSel ? 'ff' : 'cc');
     mainCtx.beginPath(); mainCtx.arc(p.px, p.py, r2, 0, Math.PI*2); mainCtx.fill();
     mainCtx.strokeStyle = n.color + '88'; mainCtx.lineWidth = 1; mainCtx.stroke();
 
+    // Orphan dashed ring
     if (n.orphan) {
       mainCtx.strokeStyle = '#e8e03866'; mainCtx.lineWidth = 0.8; mainCtx.setLineDash([2,3]);
       mainCtx.beginPath(); mainCtx.arc(p.px, p.py, r2 + 3, 0, Math.PI*2); mainCtx.stroke();
@@ -790,13 +790,11 @@ function drawCanvasLabel(ctx, x, y, r, label) {
   ctx.font = 'bold 11px JetBrains Mono, monospace';
   const tw = ctx.measureText(label).width;
   const bx = x - tw/2 - 5, by = y - r - 24, bw = tw + 10, bh = 16;
-  // Background pill
   ctx.fillStyle = 'rgba(4,7,12,0.93)';
   ctx.strokeStyle = 'rgba(57,201,255,0.38)';
   ctx.lineWidth = 1;
   ctx.fillRect(bx, by, bw, bh);
   ctx.strokeRect(bx, by, bw, bh);
-  // Bold white text with cyan glow
   ctx.shadowColor = '#39c9ff';
   ctx.shadowBlur = 6;
   ctx.fillStyle = '#ffffff';
@@ -834,7 +832,7 @@ function getNodeAt2D(mx, my) {
 // ── MODE SWITCH ──────────────────────────────────────────────
 function setMode(m) {
   mode = m;
-  ['map','2d','3d'].forEach(k => {
+  ['map','2d','3d','attr'].forEach(k => {
     const btn = document.getElementById('b' + k);
     if (btn) btn.classList.toggle('on', k === m);
   });
@@ -842,36 +840,66 @@ function setMode(m) {
   const leafletEl = document.getElementById('leaflet-map');
   const overlayEl = document.getElementById('overlay-canvas');
   const mainEl    = document.getElementById('main-canvas');
+  const attrEl    = document.getElementById('attr-canvas');
+  const attrInfoEl= document.getElementById('attr-info');
+  const filtersEl = document.getElementById('filters');
+  const toolbarEl = document.getElementById('toolbar');
 
-  if (m === 'map') {
-    if (leafletEl) leafletEl.style.display = 'block';
-    if (overlayEl) overlayEl.style.display = 'block';
-    if (mainEl)    mainEl.style.display    = 'none';
-    initLeafletMap();
-    renderLeafletMarkers();
+  // Hide all canvases first
+  if (leafletEl) leafletEl.style.display = 'none';
+  if (overlayEl) overlayEl.style.display = 'none';
+  if (mainEl)    mainEl.style.display    = 'none';
+  if (attrEl)    attrEl.style.display    = 'none';
+
+  const legendEl    = document.getElementById('legend');
+  const searchEl    = document.getElementById('search-wrap');
+  const cacheEl     = document.getElementById('cache-panel');
+
+  if (m === 'attr') {
+    // Dismiss any open scan node card before entering attr mode
+    selectNode(null);
+    // Hide scan-specific panels and toolbar
+    if (filtersEl) filtersEl.style.display  = 'none';
+    if (legendEl)  legendEl.style.display   = 'none';
+    if (searchEl)  searchEl.style.display   = 'none';
+    if (cacheEl)   cacheEl.style.display    = 'none';
+    if (toolbarEl) toolbarEl.style.display  = 'none';
+    if (attrEl)    attrEl.style.display     = 'block';
+    resizeAttr();
+    buildAttrFromScan();
   } else {
-    if (leafletEl) leafletEl.style.display = 'none';
-    if (overlayEl) overlayEl.style.display = 'none';
-    if (mainEl)    mainEl.style.display    = 'block';
-    // BUG FIX #7: mainCanvas baru visible setelah display='block'.
-    // clientWidth/clientHeight = 0 selama hidden — W dan H belum di-set benar.
-    // Tanpa resize di sini, semua node spawn di (0,0) dan force sim tidak bisa spread.
-    resizeMain();
-    if (mainEl) mainEl.classList.toggle('grid-bg', m === '2d');
-    if (m === '3d') {
-      // Rebuild pts3 setiap kali masuk mode 3D supaya koordinat globe fresh
-      build3D();
-    }
-    if (m === '2d') {
-      // Reset posisi semua node supaya tidak bertumpuk di (0,0)
-      const cx = W / 2, cy = H / 2;
-      nodes.forEach(n => {
-        if (!n.x || !n.y || (n.x === 0 && n.y === 0)) {
-          n.x = cx + (Math.random() - 0.5) * 400;
-          n.y = cy + (Math.random() - 0.5) * 280;
-        }
-      });
-      layoutStable = false;
+    // Restore scan-specific panels and toolbar
+    if (filtersEl) filtersEl.style.display  = '';
+    if (legendEl)  legendEl.style.display   = '';
+    if (searchEl)  searchEl.style.display   = '';
+    if (cacheEl)   cacheEl.style.display    = '';
+    if (toolbarEl) toolbarEl.style.display  = '';
+    if (attrInfoEl) attrInfoEl.style.display = 'none';
+    var attrEmptyEl = document.getElementById('attr-empty');
+    if (attrEmptyEl) attrEmptyEl.style.display = 'none';
+
+    if (m === 'map') {
+      if (leafletEl) leafletEl.style.display = 'block';
+      if (overlayEl) overlayEl.style.display = 'block';
+      initLeafletMap();
+      renderLeafletMarkers();
+    } else {
+      if (mainEl) mainEl.style.display = 'block';
+      // BUG FIX #7: mainCanvas baru visible setelah display='block'.
+      resizeMain();
+      // Grid bg only in 2D
+      if (mainEl) mainEl.classList.toggle('grid-bg', m === '2d');
+      if (m === '3d') build3D();
+      if (m === '2d') {
+        const cx = W / 2, cy = H / 2;
+        nodes.forEach(n => {
+          if (!n.x || !n.y || (n.x === 0 && n.y === 0)) {
+            n.x = cx + (Math.random() - 0.5) * 400;
+            n.y = cy + (Math.random() - 0.5) * 280;
+          }
+        });
+        layoutStable = false;
+      }
     }
   }
   addLog('mode → ' + m);
@@ -982,17 +1010,12 @@ function wireCanvasEvents() {
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     if (mode === '3d') {
       if (drag3) {
-        // Real drag rotation — direct and responsive
         const dx = mx - last3.x, dy = my - last3.y;
-        rot3.ay += dx * 0.007;
-        rot3.ax += dy * 0.004;
-        // Store last delta as momentum for when drag releases
-        rot3.vy = dx * 0.005;
-        rot3.vx = dy * 0.003;
+        rot3.ay += dx * 0.007; rot3.ax += dy * 0.004;
+        rot3.vy = dx * 0.005; rot3.vx = dy * 0.003;
         if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) drag3Moved = true;
         last3 = { x: mx, y: my };
       }
-      // No parallax when not dragging — auto-rotation handles itself in draw3D
       return;
     }
     if (dragging) {
@@ -1017,13 +1040,7 @@ function wireCanvasEvents() {
   mainCanvas.addEventListener('mouseup', e => {
     const r = mainCanvas.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
-    if (mode === '3d') {
-      drag3 = false;
-      if (!drag3Moved) pending3 = {x: mx, y: my}; // click with no drag → select node
-      // else: rot3.vy/vx carry inertia into next draw3D frames
-      drag3Moved = false;
-      return;
-    }
+    if (mode === '3d') { drag3 = false; if (!drag3Moved) pending3 = {x:mx,y:my}; drag3Moved = false; return; }
     if (dragging) {
       const w = worldXY(mx, my);
       if (Math.hypot(dragging.x-(w.x+dragOff.x), dragging.y-(w.y+dragOff.y)) < 4) selectNode(dragging);
@@ -1055,20 +1072,17 @@ function wireCanvasEvents() {
     if (mode === '3d') {
       if (e.touches.length === 1) {
         const t = e.touches[0];
-        const dx = t.clientX - last3.x, dy = t.clientY - last3.y;
-        rot3.ay += dx * 0.007; rot3.ax += dy * 0.004;
-        rot3.vy = dx * 0.005; rot3.vx = dy * 0.003;
+        const dx = t.clientX-last3.x, dy = t.clientY-last3.y;
+        rot3.ay += dx*0.007; rot3.ax += dy*0.004;
+        rot3.vy = dx*0.005; rot3.vx = dy*0.003;
         drag3Moved = true;
-        last3 = {x: t.clientX, y: t.clientY};
+        last3 = {x:t.clientX, y:t.clientY};
       } else if (e.touches.length === 2) {
-        // Pinch-to-zoom
         const d = Math.hypot(
           e.touches[0].clientX - e.touches[1].clientX,
           e.touches[0].clientY - e.touches[1].clientY
         );
-        if (pinchDist3 > 0) {
-          zoom3 = Math.max(0.25, Math.min(4.0, zoom3 * (d / pinchDist3)));
-        }
+        if (pinchDist3 > 0) zoom3 = Math.max(0.25, Math.min(4.0, zoom3 * (d / pinchDist3)));
         pinchDist3 = d;
       }
     }
@@ -1076,7 +1090,7 @@ function wireCanvasEvents() {
   mainCanvas.addEventListener('touchstart', e => {
     if (mode === '3d') {
       if (e.touches.length === 1) { drag3=true; drag3Moved=false; last3={x:e.touches[0].clientX,y:e.touches[0].clientY}; }
-      if (e.touches.length === 2) { pinchDist3 = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); }
+      if (e.touches.length === 2) { pinchDist3=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY); }
     }
   });
   mainCanvas.addEventListener('touchend', () => { drag3=false; pinchDist3=0; });
@@ -1092,6 +1106,7 @@ function wireKeyboard() {
     if (e.key === '1') setMode('map');
     if (e.key === '2') setMode('2d');
     if (e.key === '3') setMode('3d');
+    if (e.key === '4') setMode('attr');
     if (e.key === 'c') clearCache();
   });
 }
@@ -1112,8 +1127,10 @@ function renderLoop() {
     drawLeafletOverlay();
   } else if (mode === '2d') {
     draw2D();
-  } else {
+  } else if (mode === '3d') {
     draw3D();
+  } else if (mode === 'attr') {
+    drawAttr();
   }
   requestAnimationFrame(renderLoop);
 }
@@ -1193,7 +1210,16 @@ function boot() {
   overlayCtx   = overlayCanvas.getContext('2d');
 
   resizeMain();
-  window.addEventListener('resize', () => { resizeMain(); resizeOverlay(); });
+  window.addEventListener('resize', () => {
+    resizeMain(); resizeOverlay();
+    if (mode === 'attr') resizeAttr();
+  });
+
+  attrCanvas = document.getElementById('attr-canvas');
+  if (attrCanvas) {
+    attrCtx = attrCanvas.getContext('2d');
+    wireAttrEvents();
+  }
 
   wireCanvasEvents();
   wireKeyboard();
@@ -1202,13 +1228,570 @@ function boot() {
 
   document.getElementById('wsdot').classList.remove('live');
 
-  addLog('InfraMapper ready — shortcut keys: 1=MAP 2=2D 3=3D R=reset Z=fit C=clear cache');
+  addLog('InfraMapper ready — shortcut keys: 1=MAP 2=2D 3=3D 4=ATTR R=reset Z=fit C=cache');
 
   connectWS();
 
   // Start in map mode
   setMode('map');
   renderLoop();
+}
+
+// ── ATTRIBUTION GRAPH SYSTEM ─────────────────────────────────
+//
+// Signal-centric view: built directly from the current scan data.
+//
+// Graph structure:
+//   SIGNAL NODES  — large hub circles, one per unique signal value
+//                   (favicon_hash, jarm, asn, header_hash, tls_issuer)
+//                   Size = number of assets that share it
+//                   Color = signal type color
+//
+//   ASSET NODES   — small satellite dots connected to their signal hubs
+//                   Click → navigates back to that asset in MAP/2D/3D
+//
+//   EDGES         — signal hub ↔ asset (thin, colored by signal type)
+//                   Hub-to-hub edges when assets appear in multiple clusters
+//
+// No API call needed — uses the nodes[] already in memory from the scan.
+// ─────────────────────────────────────────────────────────────
+
+const ATTR_SIGNAL_COLORS = {
+  favicon_hash: '#e89c32',
+  header_hash:  '#32a0e8',
+  jarm:         '#8c32e8',
+  asn:          '#32e39a',
+  tls_issuer:   '#e83272',
+};
+
+let attrCanvas, attrCtx, attrW = 800, attrH = 600;
+
+// attrN  = signal hub nodes + asset satellite nodes (mixed, isHub flag differentiates)
+// attrE  = hub→asset edges + hub↔hub edges
+let attrN = [], attrE = [];
+let attrSel = null, attrHov = null;
+let attrCamX = 0, attrCamY = 0, attrCamZ = 1.0;
+let attrPanning = false, attrPanStart = {x:0,y:0}, attrPanOrigin = {x:0,y:0};
+let attrDragging = null, attrDragOff = {x:0,y:0};
+let attrLayoutStable = false;
+let attrLoaded = false;
+
+// Hub sim: strong repel between hubs, spring attraction to their satellites
+const ATTR_SIM = { hubRepel: 18000, satRepel: 800, spring: 0.00025, restLen: 120, damp: 0.78, grav: 0.0015 };
+
+// ─── Build graph from current scan's nodes[] ────────────────
+//
+// Signal hub = one node per unique (type, value) cluster signal.
+// Satellite  = asset node connected to its hub(s).
+// Hub↔hub edges = two hubs share the same asset (infrastructure overlap).
+//
+function buildAttrFromScan() {
+  if (!nodes || !nodes.length) return false;
+
+  // ── Step 1: group assets by their cluster signal ──────────
+  // Use cluster ID + pivot as the signal key.
+  // Fall back to explicit signal fields for unclustered assets.
+  var hubMap = {};   // key → {type, value, label, color, assetIds:[]}
+
+  function addToHub(key, type, value, label, assetId) {
+    if (!value || value === '0' || value === 'AS0') return;
+    var col = ATTR_SIGNAL_COLORS[type] || '#bfcfe3';
+    if (!hubMap[key]) hubMap[key] = { key: key, type: type, value: value, label: label, color: col, assetIds: [] };
+    if (hubMap[key].assetIds.indexOf(assetId) < 0) hubMap[key].assetIds.push(assetId);
+  }
+
+  nodes.forEach(function(n) {
+    // Cluster-based signal (already computed by Go pipeline)
+    if (n.cluster && n.pivot) {
+      var label = n.cluster_label || n.cluster;
+      addToHub('clust:' + n.cluster, n.pivot, n.cluster, label, n.id);
+    }
+    // Explicit signal fields — includes unclustered assets (e.g. raw IPs from FOFA)
+    if (n.favicon_hash && n.favicon_hash !== '0') {
+      addToHub('fav:' + n.favicon_hash, 'favicon_hash', n.favicon_hash, 'favicon:' + n.favicon_hash.slice(0,8), n.id);
+    }
+    if (n.header_hash && n.header_hash !== '0') {
+      addToHub('hh:' + n.header_hash, 'header_hash', n.header_hash, 'header:' + n.header_hash.slice(0,8), n.id);
+    }
+    if (n.jarm && n.jarm.length > 8) {
+      addToHub('jarm:' + n.jarm, 'jarm', n.jarm, 'jarm:' + n.jarm.slice(0,12) + '…', n.id);
+    }
+    if (n.asn && n.asn !== 'AS0') {
+      addToHub('asn:' + n.asn, 'asn', n.asn, n.asn, n.id);
+    }
+  });
+
+  // ── Step 2: discard single-asset hubs (not attribution) ───
+  var hubs = Object.values(hubMap).filter(function(h) { return h.assetIds.length >= 2; });
+  if (!hubs.length) return false;
+
+  // ── Step 3: layout ─────────────────────────────────────────
+  // Hubs form an inner ring; satellites orbit their primary hub.
+  var cx = attrW / 2, cy = attrH / 2;
+  var hubR = Math.min(attrW, attrH) * 0.22;
+  attrN = [];
+  attrE = [];
+
+  // Hub nodes
+  hubs.forEach(function(h, i) {
+    var angle = (i / hubs.length) * Math.PI * 2;
+    attrN.push({
+      id:       'hub:' + h.key,
+      isHub:    true,
+      hubKey:   h.key,
+      sigType:  h.type,
+      sigValue: h.value,
+      label:    h.label,
+      color:    h.color,
+      assetIds: h.assetIds,
+      r:        Math.max(20, Math.min(44, 14 + h.assetIds.length * 2.2)),
+      x:        cx + Math.cos(angle) * hubR,
+      y:        cy + Math.sin(angle) * hubR,
+      vx: 0, vy: 0,
+      pulse: Math.random() * Math.PI * 2,
+    });
+  });
+
+  // Asset satellite nodes — only assets that belong to at least one hub
+  var assetInHub = {};
+  hubs.forEach(function(h) {
+    h.assetIds.forEach(function(id) { assetInHub[id] = true; });
+  });
+
+  var satMap = {}; // scanNodeId → attrN satellite node
+  nodes.forEach(function(n) {
+    if (!assetInHub[n.id]) return;
+    // Find primary hub (first hub that contains this asset)
+    var primaryHub = null;
+    for (var hi = 0; hi < attrN.length; hi++) {
+      if (attrN[hi].assetIds.indexOf(n.id) >= 0) { primaryHub = attrN[hi]; break; }
+    }
+    if (!primaryHub) return;
+    var jitter = Math.random() * Math.PI * 2;
+    var satR   = primaryHub.r + 40 + Math.random() * 40;
+    var satNode = {
+      id:        'sat:' + n.id,
+      isSat:     true,
+      scanId:    n.id,
+      label:     n.host || n.ip || String(n.id),
+      color:     n.color || '#bfcfe3',
+      r:         4,
+      x:         primaryHub.x + Math.cos(jitter) * satR,
+      y:         primaryHub.y + Math.sin(jitter) * satR,
+      vx: 0, vy: 0,
+      pulse: Math.random() * Math.PI * 2,
+    };
+    attrN.push(satNode);
+    satMap[n.id] = satNode;
+  });
+
+  // ── Step 4: edges ─────────────────────────────────────────
+  // Hub → satellite edges
+  hubs.forEach(function(h) {
+    var hubNode = attrN.find(function(an) { return an.hubKey === h.key; });
+    if (!hubNode) return;
+    h.assetIds.forEach(function(assetId) {
+      var sat = satMap[assetId];
+      if (sat) {
+        attrE.push({ from: hubNode, to: sat, type: 'hub-sat', color: h.color, strength: 0.6 });
+      }
+    });
+  });
+
+  // Hub ↔ hub edges — when they share an asset (infrastructure overlap)
+  for (var i = 0; i < hubs.length; i++) {
+    for (var j = i+1; j < hubs.length; j++) {
+      var shared = hubs[i].assetIds.filter(function(id) {
+        return hubs[j].assetIds.indexOf(id) >= 0;
+      });
+      if (shared.length > 0) {
+        var hi = attrN.find(function(an) { return an.hubKey === hubs[i].key; });
+        var hj = attrN.find(function(an) { return an.hubKey === hubs[j].key; });
+        if (hi && hj) {
+          var conf = Math.min(1, shared.length / Math.min(hubs[i].assetIds.length, hubs[j].assetIds.length));
+          attrE.push({ from: hi, to: hj, type: 'hub-hub', color: '#c0d0e4', strength: conf, sharedCount: shared.length });
+        }
+      }
+    }
+  }
+
+  attrLayoutStable = false;
+  attrLoaded = true;
+
+  var emptyEl = document.getElementById('attr-empty');
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  var hubCount = hubs.length;
+  var satCount = Object.keys(satMap).length;
+  var overlapEdges = attrE.filter(function(e) { return e.type === 'hub-hub'; }).length;
+  updateAttrHUD(hubCount, satCount, overlapEdges);
+  addLog('attr: ' + hubCount + ' signal hubs · ' + satCount + ' assets · ' + overlapEdges + ' overlaps');
+  return true;
+}
+
+function updateAttrHUD(hubs, assets, overlaps) {
+  var el = document.getElementById('attr-info');
+  if (!el) return;
+  el.textContent = hubs + ' signal hubs  ·  ' + assets + ' assets  ·  ' + overlaps + ' infrastructure overlaps';
+  el.style.display = 'block';
+}
+
+// ─── Force simulation ────────────────────────────────────────
+function attrSimStep() {
+  if (attrLayoutStable) return;
+
+  var hubs = attrN.filter(function(n) { return n.isHub; });
+  var sats = attrN.filter(function(n) { return n.isSat; });
+  var maxV = 0;
+
+  // Hub↔hub repulsion
+  for (var i = 0; i < hubs.length; i++) {
+    for (var j = i+1; j < hubs.length; j++) {
+      var a = hubs[i], b = hubs[j];
+      var dx = b.x-a.x, dy = b.y-a.y, d2 = dx*dx+dy*dy+1, d = Math.sqrt(d2);
+      var f = ATTR_SIM.hubRepel / d2;
+      a.vx -= f*dx/d; a.vy -= f*dy/d;
+      b.vx += f*dx/d; b.vy += f*dy/d;
+    }
+  }
+
+  // Satellite↔satellite soft repulsion (within same hub cluster)
+  for (var i = 0; i < sats.length; i++) {
+    for (var j = i+1; j < sats.length; j++) {
+      var a = sats[i], b = sats[j];
+      var dx = b.x-a.x, dy = b.y-a.y, d2 = dx*dx+dy*dy+1, d = Math.sqrt(d2);
+      if (d < 30) {
+        var f = ATTR_SIM.satRepel / d2;
+        a.vx -= f*dx/d; a.vy -= f*dy/d;
+        b.vx += f*dx/d; b.vy += f*dy/d;
+      }
+    }
+  }
+
+  // Spring forces along edges
+  attrE.forEach(function(e) {
+    var a = e.from, b = e.to;
+    var dx = b.x-a.x, dy = b.y-a.y, d = Math.sqrt(dx*dx+dy*dy)+1;
+    var rest = e.type === 'hub-hub' ? ATTR_SIM.restLen * 2.2 : ATTR_SIM.restLen;
+    var f = ATTR_SIM.spring * (d - rest) * (e.strength || 0.5);
+    // Only satellites move toward hubs; hubs are moved by hub-hub springs
+    if (e.type === 'hub-sat') {
+      b.vx += f*dx/d; b.vy += f*dy/d;
+      a.vx += (f*dx/d) * 0.15; a.vy += (f*dy/d) * 0.15;
+    } else {
+      a.vx += f*dx/d; a.vy += f*dy/d;
+      b.vx -= f*dx/d; b.vy -= f*dy/d;
+    }
+  });
+
+  // Integrate
+  attrN.forEach(function(n) {
+    if (n === attrDragging) return;
+    n.vx += (attrW/2 - n.x) * ATTR_SIM.grav;
+    n.vy += (attrH/2 - n.y) * ATTR_SIM.grav;
+    n.vx *= ATTR_SIM.damp; n.vy *= ATTR_SIM.damp;
+    n.x += n.vx; n.y += n.vy;
+    var pad = n.r + 8;
+    n.x = Math.max(pad, Math.min(attrW - pad, n.x));
+    n.y = Math.max(pad, Math.min(attrH - pad, n.y));
+    maxV = Math.max(maxV, Math.abs(n.vx), Math.abs(n.vy));
+  });
+
+  if (maxV < 0.07) attrLayoutStable = true;
+}
+
+// ─── Drawing ─────────────────────────────────────────────────
+function drawAttr() {
+  if (!attrCtx || !attrCanvas) return;
+  attrCtx.save();
+  attrCtx.clearRect(0, 0, attrW, attrH);
+  attrCtx.translate(attrCamX, attrCamY);
+  attrCtx.scale(attrCamZ, attrCamZ);
+
+  if (!attrN.length) { attrCtx.restore(); return; }
+
+  attrSimStep();
+
+  // Draw hub-hub overlap edges first (behind everything)
+  attrE.forEach(function(e) {
+    if (e.type !== 'hub-hub') return;
+    var conf = e.strength || 0.4;
+    var al   = Math.round(conf * 160).toString(16).padStart(2,'0');
+    attrCtx.strokeStyle = e.color + al;
+    attrCtx.lineWidth   = Math.max(1.5, conf * 5);
+    attrCtx.lineCap     = 'round';
+    attrCtx.setLineDash([6, 5]);
+    attrCtx.beginPath();
+    attrCtx.moveTo(e.from.x, e.from.y);
+    attrCtx.lineTo(e.to.x,   e.to.y);
+    attrCtx.stroke();
+    attrCtx.setLineDash([]);
+    // Shared-count badge at midpoint
+    var mx = (e.from.x + e.to.x) / 2, my = (e.from.y + e.to.y) / 2;
+    attrCtx.font      = '8px JetBrains Mono, monospace';
+    attrCtx.fillStyle = '#c0d0e4aa';
+    attrCtx.textAlign = 'center';
+    attrCtx.fillText(e.sharedCount + ' shared', mx, my - 4);
+    attrCtx.textAlign = 'left';
+  });
+
+  // Draw hub→satellite edges
+  attrE.forEach(function(e) {
+    if (e.type !== 'hub-sat') return;
+    var isSel = e.to === attrSel || e.from === attrSel;
+    attrCtx.strokeStyle = e.color + (isSel ? 'bb' : '38');
+    attrCtx.lineWidth   = isSel ? 1.5 : 0.8;
+    attrCtx.lineCap     = 'round';
+    attrCtx.beginPath();
+    attrCtx.moveTo(e.from.x, e.from.y);
+    attrCtx.lineTo(e.to.x,   e.to.y);
+    attrCtx.stroke();
+  });
+
+  // Draw satellite asset dots
+  attrN.forEach(function(n) {
+    if (!n.isSat) return;
+    n.pulse = (n.pulse || 0) + 0.04;
+    var isSel = n === attrSel, isHov = n === attrHov;
+    var pr = n.r + (isSel ? 3 : 0);
+    attrCtx.fillStyle = isSel ? n.color : (isHov ? n.color + 'ee' : n.color + 'aa');
+    attrCtx.beginPath(); attrCtx.arc(n.x, n.y, pr, 0, Math.PI*2); attrCtx.fill();
+    if (isSel || isHov) {
+      attrCtx.strokeStyle = n.color; attrCtx.lineWidth = 1.2;
+      attrCtx.stroke();
+      // Label
+      attrCtx.font      = '9px JetBrains Mono, monospace';
+      attrCtx.fillStyle = '#ffffff';
+      attrCtx.textAlign = 'center';
+      attrCtx.fillText(n.label, n.x, n.y - pr - 5);
+      attrCtx.textAlign = 'left';
+    }
+  });
+
+  // Draw signal hub nodes (on top)
+  attrN.forEach(function(n) {
+    if (!n.isHub) return;
+    n.pulse = (n.pulse || 0) + 0.018;
+    var isSel = n === attrSel, isHov = n === attrHov;
+    var pr    = n.r + Math.sin(n.pulse) * (isSel ? 3 : 1);
+
+    // Outer glow
+    var g = attrCtx.createRadialGradient(n.x, n.y, 0, n.x, n.y, pr * 3.2);
+    g.addColorStop(0, n.color + (isSel ? '55' : '22'));
+    g.addColorStop(1, n.color + '00');
+    attrCtx.fillStyle = g;
+    attrCtx.beginPath(); attrCtx.arc(n.x, n.y, pr * 3.2, 0, Math.PI*2); attrCtx.fill();
+
+    // Circle body
+    attrCtx.fillStyle   = isSel ? n.color : (isHov ? n.color + 'ee' : n.color + 'bb');
+    attrCtx.beginPath(); attrCtx.arc(n.x, n.y, pr, 0, Math.PI*2); attrCtx.fill();
+    attrCtx.strokeStyle = n.color + (isSel ? 'ff' : 'cc');
+    attrCtx.lineWidth   = isSel ? 2.5 : 1.8;
+    attrCtx.stroke();
+
+    // Asset count badge (centre)
+    attrCtx.font      = 'bold 11px JetBrains Mono, monospace';
+    attrCtx.fillStyle = isSel ? '#06090f' : '#ffffff';
+    attrCtx.textAlign = 'center';
+    attrCtx.fillText(n.assetIds.length, n.x, n.y + 4);
+
+    // Signal type label (top)
+    attrCtx.font      = '8px JetBrains Mono, monospace';
+    attrCtx.fillStyle = n.color + (isSel ? 'ff' : 'bb');
+    attrCtx.fillText(n.sigType, n.x, n.y - pr - 16);
+
+    // Cluster / signal label (bottom)
+    attrCtx.font      = '9px JetBrains Mono, monospace';
+    attrCtx.fillStyle = isSel ? '#ffffff' : (isHov ? '#c0d0e4' : '#6a8aab');
+    var lbl = n.label.length > 22 ? n.label.slice(0, 20) + '…' : n.label;
+    attrCtx.fillText(lbl, n.x, n.y + pr + 14);
+    attrCtx.textAlign = 'left';
+
+    // Selected dashed ring
+    if (isSel) {
+      attrCtx.strokeStyle = n.color + '66';
+      attrCtx.lineWidth   = 1;
+      attrCtx.setLineDash([3,4]);
+      attrCtx.beginPath(); attrCtx.arc(n.x, n.y, pr + 9, 0, Math.PI*2); attrCtx.stroke();
+      attrCtx.setLineDash([]);
+    }
+  });
+
+  attrCtx.restore();
+}
+
+// ─── Node card for ATTR mode ─────────────────────────────────
+function selectAttrNode(an) {
+  attrSel = an;
+  var card = document.getElementById('node-card');
+  if (!card) return;
+  var cachePanel = document.getElementById('cache-panel');
+
+  if (!an) {
+    card.classList.add('hidden');
+    if (cachePanel) cachePanel.style.display = '';
+    return;
+  }
+  if (cachePanel) cachePanel.style.display = 'none';
+
+  var bar = document.getElementById('nc-bar');
+
+  if (an.isHub) {
+    // ── Signal hub card ────────────────────────────────────
+    if (bar) bar.style.background = an.color;
+
+    ncTxt('nc-title',    an.label);
+    ncTxt('nc-subtitle', an.sigType + '  ·  ' + an.assetIds.length + ' assets');
+
+    ncSet('nc-status',  an.sigValue.slice(0, 24) + (an.sigValue.length > 24 ? '…' : ''), '');
+    ncSet('nc-port',    '—', '');
+    ncSet('nc-pivot',   an.sigType, '');
+    ncSet('nc-cluster', '—', '');
+    ncSet('nc-asn',     '—', '');
+    ncSet('nc-jarm',    an.sigType === 'jarm' ? an.sigValue.slice(0,24) + '…' : '—', '');
+    ncSet('nc-country', '—', '');
+    ncSet('nc-geo',     '—', '');
+    ncSet('nc-source',  'signal hub', '');
+
+    var bdg = document.getElementById('nc-badges');
+    if (bdg) {
+      bdg.innerHTML = '<span class="nc-badge" style="color:' + an.color + ';border-color:' + an.color + '44">' + an.sigType + '</span>';
+    }
+
+    // Relations: the asset nodes attached to this hub
+    var relsEl = document.getElementById('nc-rels');
+    if (relsEl) {
+      var members = nodes.filter(function(n) { return an.assetIds.indexOf(n.id) >= 0; });
+      members.sort(function(a,b) { return (b.score||0) - (a.score||0); });
+      if (!members.length) {
+        relsEl.innerHTML = '<div class="nc-rel-empty">no assets</div>';
+      } else {
+        relsEl.innerHTML = '<div class="nc-rel-hdr">assets sharing this signal (' + members.length + ')</div>' +
+          members.map(function(m) {
+            return '<div class="nc-rel-item" onclick="jumpToAsset(' + m.id + ')">' +
+              '<div class="nc-rel-dot" style="background:' + m.color + '"></div>' +
+              '<span class="nc-rel-name">' + (m.host || m.ip || String(m.id)) + '</span>' +
+              '<span class="nc-rel-via">' + (m.country || m.asn || '') + '</span>' +
+              '</div>';
+          }).join('');
+      }
+    }
+
+  } else if (an.isSat) {
+    // ── Asset satellite card: proxy to the scan node card ──
+    var scanNode = nodes.find(function(n) { return n.id === an.scanId; });
+    if (scanNode) { selectNode(scanNode); return; }
+    if (bar) bar.style.background = an.color;
+    ncTxt('nc-title',    an.label);
+    ncTxt('nc-subtitle', 'asset');
+    ncSet('nc-source',   'scan asset', '');
+  }
+
+  card.classList.remove('hidden');
+}
+
+// Jump to asset: switch to 2D mode and highlight the node
+function jumpToAsset(id) {
+  selectAttrNode(null);
+  setMode('2d');
+  var n = nodes.find(function(x) { return x.id === id; });
+  if (n) { setTimeout(function() { selectNode(n); }, 80); }
+}
+
+function pickAttrNode(id) {
+  var n = attrN.find(function(x) { return x.id === id; });
+  if (n) selectAttrNode(n);
+}
+
+function getAttrNodeAt(mx, my) {
+  var wx = (mx - attrCamX) / attrCamZ;
+  var wy = (my - attrCamY) / attrCamZ;
+  var best = null, bestD = Infinity;
+  attrN.forEach(function(n) {
+    var d = Math.hypot(n.x - wx, n.y - wy);
+    if (d < n.r + 10 && d < bestD) { bestD = d; best = n; }
+  });
+  return best;
+}
+
+function resizeAttr() {
+  if (!attrCanvas) return;
+  attrW = attrCanvas.clientWidth  || 800;
+  attrH = attrCanvas.clientHeight || 600;
+  attrCanvas.width  = attrW * devicePixelRatio;
+  attrCanvas.height = attrH * devicePixelRatio;
+  attrCtx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  attrLayoutStable = false;
+}
+
+function wireAttrEvents() {
+  if (!attrCanvas) return;
+
+  attrCanvas.addEventListener('mousemove', function(e) {
+    if (mode !== 'attr') return;
+    var r  = attrCanvas.getBoundingClientRect();
+    var mx = e.clientX - r.left, my = e.clientY - r.top;
+    if (attrDragging) {
+      var wx = (mx - attrCamX) / attrCamZ, wy = (my - attrCamY) / attrCamZ;
+      attrDragging.x = wx + attrDragOff.x;
+      attrDragging.y = wy + attrDragOff.y;
+      attrDragging.vx = 0; attrDragging.vy = 0;
+      attrLayoutStable = false;
+      return;
+    }
+    if (attrPanning) {
+      attrCamX = attrPanOrigin.x + (mx - attrPanStart.x);
+      attrCamY = attrPanOrigin.y + (my - attrPanStart.y);
+      return;
+    }
+    attrHov = getAttrNodeAt(mx, my);
+    attrCanvas.style.cursor = attrHov ? 'pointer' : 'default';
+  });
+
+  attrCanvas.addEventListener('mousedown', function(e) {
+    if (mode !== 'attr') return;
+    var r  = attrCanvas.getBoundingClientRect();
+    var mx = e.clientX - r.left, my = e.clientY - r.top;
+    var n  = getAttrNodeAt(mx, my);
+    if (n) {
+      var wx = (mx - attrCamX) / attrCamZ, wy = (my - attrCamY) / attrCamZ;
+      attrDragging = n; attrDragOff = { x: n.x - wx, y: n.y - wy };
+    } else {
+      attrPanning = true;
+      attrPanStart  = { x: mx, y: my };
+      attrPanOrigin = { x: attrCamX, y: attrCamY };
+    }
+  });
+
+  attrCanvas.addEventListener('mouseup', function(e) {
+    if (mode !== 'attr') return;
+    var r  = attrCanvas.getBoundingClientRect();
+    var mx = e.clientX - r.left, my = e.clientY - r.top;
+    if (attrDragging) {
+      var wx = (mx - attrCamX) / attrCamZ, wy = (my - attrCamY) / attrCamZ;
+      if (Math.hypot(attrDragging.x - (wx + attrDragOff.x), attrDragging.y - (wy + attrDragOff.y)) < 4) {
+        selectAttrNode(attrDragging);
+      }
+    } else if (!attrPanning || Math.hypot(mx - attrPanStart.x, my - attrPanStart.y) < 4) {
+      var clicked = getAttrNodeAt(mx, my);
+      selectAttrNode(clicked || null);
+    }
+    attrDragging = null; attrPanning = false;
+  });
+
+  attrCanvas.addEventListener('mouseleave', function() { attrDragging = null; attrPanning = false; });
+
+  attrCanvas.addEventListener('wheel', function(e) {
+    if (mode !== 'attr') return;
+    e.preventDefault();
+    var r   = attrCanvas.getBoundingClientRect();
+    var mx  = e.clientX - r.left, my = e.clientY - r.top;
+    var fac = e.deltaY < 0 ? 1.12 : 0.89;
+    var nz  = Math.max(0.2, Math.min(4.0, attrCamZ * fac));
+    attrCamX = mx - (mx - attrCamX) * nz / attrCamZ;
+    attrCamY = my - (my - attrCamY) * nz / attrCamZ;
+    attrCamZ = nz;
+  }, { passive: false });
 }
 
 // Export globals needed by HTML onclick attributes
@@ -1220,3 +1803,5 @@ window.zoomFit       = zoomFit;
 window.clearCache    = clearCache;
 window.exportPNG     = exportPNG;
 window.pickNode      = pickNode;
+window.pickAttrNode  = pickAttrNode;
+

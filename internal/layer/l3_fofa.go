@@ -16,11 +16,22 @@ import (
 	"github.com/yourusername/inframapper/internal/model"
 )
 
+// FOFANewIPInfo menyimpan IP baru beserta sinyal yang digunakannya ditemukan.
+// Dipakai pipeline untuk backfill FaviconHash/JARM ke asset yang baru dibuat.
+type FOFANewIPInfo struct {
+	IP          string
+	FaviconHash string // hash yang dipakai saat query icon_hash → found this IP
+	JARM        string // JARM dari hasil FOFA (jika ada)
+	ASN         string
+	Country     string
+}
+
 // FOFAPivotResult adalah output pivot FOFA dari layer 3.
 type FOFAPivotResult struct {
 	Hits        int
-	NewIPs      []string // IP baru yang belum ada di asset list
-	CertDomains []string // domain dari cert.domain yang bisa di-re-seed ke L1/L4
+	NewIPs      []string       // IP baru yang belum ada di asset list (backward compat)
+	NewIPInfos  []FOFANewIPInfo // enriched: IP + signal yang menemukannya
+	CertDomains []string       // domain dari cert.domain yang bisa di-re-seed ke L1/L4
 }
 
 // RunFOFAPivot menjalankan FOFA pivot secara paralel dengan Shodan.
@@ -105,10 +116,17 @@ func RunFOFAPivot(ctx context.Context, cfg model.Config, assets []*model.Asset) 
 				}
 			}
 
-			// Catat IP baru
+			// Catat IP baru beserta sinyal yang menemukannya
 			if m.IP != "" && !existingIPs[m.IP] {
 				existingIPs[m.IP] = true
 				result.NewIPs = append(result.NewIPs, m.IP)
+				result.NewIPInfos = append(result.NewIPInfos, FOFANewIPInfo{
+					IP:          m.IP,
+					FaviconHash: hash, // hash icon_hash yang dipakai query ini
+					JARM:        m.JARM,
+					ASN:         m.ASN,
+					Country:     m.Country,
+				})
 			}
 		}
 		mu.Unlock()

@@ -39,9 +39,10 @@ const uiHTML = `<!DOCTYPE html>
   <div class="hud-space"></div>
   <div class="wsdot" id="wsdot"></div>
   <div id="mode-btns">
-    <button class="mbtn" id="bmap" onclick="setMode('map')">MAP</button>
-    <button class="mbtn" id="b2d"  onclick="setMode('2d')">2D</button>
-    <button class="mbtn" id="b3d"  onclick="setMode('3d')">3D</button>
+    <button class="mbtn" id="bmap"  onclick="setMode('map')">MAP</button>
+    <button class="mbtn" id="b2d"   onclick="setMode('2d')">2D</button>
+    <button class="mbtn" id="b3d"   onclick="setMode('3d')">3D</button>
+    <button class="mbtn" id="battr" onclick="setMode('attr')">ATTR</button>
   </div>
 </div>
 
@@ -49,6 +50,9 @@ const uiHTML = `<!DOCTYPE html>
   <div id="leaflet-map"></div>
   <canvas id="overlay-canvas"></canvas>
   <canvas id="main-canvas" class="grid-bg"></canvas>
+  <canvas id="attr-canvas"></canvas>
+  <div class="attr-empty" id="attr-empty"></div>
+  <div id="attr-info"></div>
 
   <div id="loader">
     <div class="loader-logo">INFRAMAPPER</div>
@@ -110,7 +114,7 @@ const uiHTML = `<!DOCTYPE html>
     <div class="leg-item"><div class="leg-dot" style="background:#e83272"></div>tls_issuer</div>
     <div class="leg-item"><div class="leg-dot" style="background:#39c9ff"></div>seed root</div>
     <div class="leg-item"><div class="leg-dot" style="background:#e8e032;border:1px dashed #e8e03288"></div>orphan</div>
-    <div class="leg-hint">1=MAP 2=2D 3=3D R=reset Z=fit C=cache</div>
+    <div class="leg-hint">1=MAP 2=2D 3=3D 4=ATTR R=reset Z=fit C=cache</div>
   </div>
 
   <div class="panel" id="cache-panel">

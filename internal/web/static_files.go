@@ -299,6 +299,33 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   box-shadow: 0 0 10px rgba(57,201,255,0.2) !important;
 }
 .nm-tooltip::before { display: none !important; }
+
+/* ── ATTR MODE (cross-target attribution graph) ──────────── */
+#attr-canvas {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  display: none; cursor: default;
+  background: var(--bg);
+}
+.attr-empty {
+  position: absolute; left: 50%;
+  top: 50%;
+  transform: translateX(-50%);
+  font-size: 11px; color: var(--tx3);
+  text-align: center; pointer-events: none;
+  line-height: 2.4; display: none;
+  max-width: 380px; z-index: 10;
+}
+#attr-info {
+  position: absolute; bottom: 14px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(6,9,15,0.90);
+  border: 1px solid var(--bdr); border-radius: 5px;
+  padding: 5px 18px; font-size: 9px; color: var(--tx2);
+  display: none; z-index: 550;
+  letter-spacing: .08em; pointer-events: none; white-space: nowrap;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
 `
 
 // staticJS adalah konten file static/app.js yang di-embed ke binary.
@@ -428,6 +455,7 @@ function initFromData(data, fromCache) {
   addLog('geo: ' + nodes.filter(n=>n.lat&&n.lon).length + ' geolocated, ' + nodes.filter(n=>n.orphan).length + ' orphans');
 
   if (mode === 'map') renderLeafletMarkers();
+  if (mode === 'attr') buildAttrFromScan();
 }
 
 function updateHUD() {
@@ -1137,7 +1165,7 @@ function getNodeAt2D(mx, my) {
 // ── MODE SWITCH ──────────────────────────────────────────────
 function setMode(m) {
   mode = m;
-  ['map','2d','3d'].forEach(k => {
+  ['map','2d','3d','attr'].forEach(k => {
     const btn = document.getElementById('b' + k);
     if (btn) btn.classList.toggle('on', k === m);
   });
@@ -1145,37 +1173,66 @@ function setMode(m) {
   const leafletEl = document.getElementById('leaflet-map');
   const overlayEl = document.getElementById('overlay-canvas');
   const mainEl    = document.getElementById('main-canvas');
+  const attrEl    = document.getElementById('attr-canvas');
+  const attrInfoEl= document.getElementById('attr-info');
+  const filtersEl = document.getElementById('filters');
+  const toolbarEl = document.getElementById('toolbar');
 
-  if (m === 'map') {
-    if (leafletEl) leafletEl.style.display = 'block';
-    if (overlayEl) overlayEl.style.display = 'block';
-    if (mainEl)    mainEl.style.display    = 'none';
-    initLeafletMap();
-    renderLeafletMarkers();
+  // Hide all canvases first
+  if (leafletEl) leafletEl.style.display = 'none';
+  if (overlayEl) overlayEl.style.display = 'none';
+  if (mainEl)    mainEl.style.display    = 'none';
+  if (attrEl)    attrEl.style.display    = 'none';
+
+  const legendEl    = document.getElementById('legend');
+  const searchEl    = document.getElementById('search-wrap');
+  const cacheEl     = document.getElementById('cache-panel');
+
+  if (m === 'attr') {
+    // Dismiss any open scan node card before entering attr mode
+    selectNode(null);
+    // Hide scan-specific panels and toolbar
+    if (filtersEl) filtersEl.style.display  = 'none';
+    if (legendEl)  legendEl.style.display   = 'none';
+    if (searchEl)  searchEl.style.display   = 'none';
+    if (cacheEl)   cacheEl.style.display    = 'none';
+    if (toolbarEl) toolbarEl.style.display  = 'none';
+    if (attrEl)    attrEl.style.display     = 'block';
+    resizeAttr();
+    buildAttrFromScan();
   } else {
-    if (leafletEl) leafletEl.style.display = 'none';
-    if (overlayEl) overlayEl.style.display = 'none';
-    if (mainEl)    mainEl.style.display    = 'block';
-    // BUG FIX #7: mainCanvas baru visible setelah display='block'.
-    // clientWidth/clientHeight = 0 selama hidden — W dan H belum di-set benar.
-    // Tanpa resize di sini, semua node spawn di (0,0) dan force sim tidak bisa spread.
-    resizeMain();
-    // Grid bg only in 2D (looks wrong on a globe)
-    if (mainEl) mainEl.classList.toggle('grid-bg', m === '2d');
-    if (m === '3d') {
-      // Rebuild pts3 setiap kali masuk mode 3D supaya koordinat globe fresh
-      build3D();
-    }
-    if (m === '2d') {
-      // Reset posisi semua node supaya tidak bertumpuk di (0,0)
-      const cx = W / 2, cy = H / 2;
-      nodes.forEach(n => {
-        if (!n.x || !n.y || (n.x === 0 && n.y === 0)) {
-          n.x = cx + (Math.random() - 0.5) * 400;
-          n.y = cy + (Math.random() - 0.5) * 280;
-        }
-      });
-      layoutStable = false;
+    // Restore scan-specific panels and toolbar
+    if (filtersEl) filtersEl.style.display  = '';
+    if (legendEl)  legendEl.style.display   = '';
+    if (searchEl)  searchEl.style.display   = '';
+    if (cacheEl)   cacheEl.style.display    = '';
+    if (toolbarEl) toolbarEl.style.display  = '';
+    if (attrInfoEl) attrInfoEl.style.display = 'none';
+    var attrEmptyEl = document.getElementById('attr-empty');
+    if (attrEmptyEl) attrEmptyEl.style.display = 'none';
+
+    if (m === 'map') {
+      if (leafletEl) leafletEl.style.display = 'block';
+      if (overlayEl) overlayEl.style.display = 'block';
+      initLeafletMap();
+      renderLeafletMarkers();
+    } else {
+      if (mainEl) mainEl.style.display = 'block';
+      // BUG FIX #7: mainCanvas baru visible setelah display='block'.
+      resizeMain();
+      // Grid bg only in 2D
+      if (mainEl) mainEl.classList.toggle('grid-bg', m === '2d');
+      if (m === '3d') build3D();
+      if (m === '2d') {
+        const cx = W / 2, cy = H / 2;
+        nodes.forEach(n => {
+          if (!n.x || !n.y || (n.x === 0 && n.y === 0)) {
+            n.x = cx + (Math.random() - 0.5) * 400;
+            n.y = cy + (Math.random() - 0.5) * 280;
+          }
+        });
+        layoutStable = false;
+      }
     }
   }
   addLog('mode → ' + m);
@@ -1382,6 +1439,7 @@ function wireKeyboard() {
     if (e.key === '1') setMode('map');
     if (e.key === '2') setMode('2d');
     if (e.key === '3') setMode('3d');
+    if (e.key === '4') setMode('attr');
     if (e.key === 'c') clearCache();
   });
 }
@@ -1402,8 +1460,10 @@ function renderLoop() {
     drawLeafletOverlay();
   } else if (mode === '2d') {
     draw2D();
-  } else {
+  } else if (mode === '3d') {
     draw3D();
+  } else if (mode === 'attr') {
+    drawAttr();
   }
   requestAnimationFrame(renderLoop);
 }
@@ -1483,7 +1543,16 @@ function boot() {
   overlayCtx   = overlayCanvas.getContext('2d');
 
   resizeMain();
-  window.addEventListener('resize', () => { resizeMain(); resizeOverlay(); });
+  window.addEventListener('resize', () => {
+    resizeMain(); resizeOverlay();
+    if (mode === 'attr') resizeAttr();
+  });
+
+  attrCanvas = document.getElementById('attr-canvas');
+  if (attrCanvas) {
+    attrCtx = attrCanvas.getContext('2d');
+    wireAttrEvents();
+  }
 
   wireCanvasEvents();
   wireKeyboard();
@@ -1492,13 +1561,570 @@ function boot() {
 
   document.getElementById('wsdot').classList.remove('live');
 
-  addLog('InfraMapper ready — shortcut keys: 1=MAP 2=2D 3=3D R=reset Z=fit C=clear cache');
+  addLog('InfraMapper ready — shortcut keys: 1=MAP 2=2D 3=3D 4=ATTR R=reset Z=fit C=cache');
 
   connectWS();
 
   // Start in map mode
   setMode('map');
   renderLoop();
+}
+
+// ── ATTRIBUTION GRAPH SYSTEM ─────────────────────────────────
+//
+// Signal-centric view: built directly from the current scan data.
+//
+// Graph structure:
+//   SIGNAL NODES  — large hub circles, one per unique signal value
+//                   (favicon_hash, jarm, asn, header_hash, tls_issuer)
+//                   Size = number of assets that share it
+//                   Color = signal type color
+//
+//   ASSET NODES   — small satellite dots connected to their signal hubs
+//                   Click → navigates back to that asset in MAP/2D/3D
+//
+//   EDGES         — signal hub ↔ asset (thin, colored by signal type)
+//                   Hub-to-hub edges when assets appear in multiple clusters
+//
+// No API call needed — uses the nodes[] already in memory from the scan.
+// ─────────────────────────────────────────────────────────────
+
+const ATTR_SIGNAL_COLORS = {
+  favicon_hash: '#e89c32',
+  header_hash:  '#32a0e8',
+  jarm:         '#8c32e8',
+  asn:          '#32e39a',
+  tls_issuer:   '#e83272',
+};
+
+let attrCanvas, attrCtx, attrW = 800, attrH = 600;
+
+// attrN  = signal hub nodes + asset satellite nodes (mixed, isHub flag differentiates)
+// attrE  = hub→asset edges + hub↔hub edges
+let attrN = [], attrE = [];
+let attrSel = null, attrHov = null;
+let attrCamX = 0, attrCamY = 0, attrCamZ = 1.0;
+let attrPanning = false, attrPanStart = {x:0,y:0}, attrPanOrigin = {x:0,y:0};
+let attrDragging = null, attrDragOff = {x:0,y:0};
+let attrLayoutStable = false;
+let attrLoaded = false;
+
+// Hub sim: strong repel between hubs, spring attraction to their satellites
+const ATTR_SIM = { hubRepel: 18000, satRepel: 800, spring: 0.00025, restLen: 120, damp: 0.78, grav: 0.0015 };
+
+// ─── Build graph from current scan's nodes[] ────────────────
+//
+// Signal hub = one node per unique (type, value) cluster signal.
+// Satellite  = asset node connected to its hub(s).
+// Hub↔hub edges = two hubs share the same asset (infrastructure overlap).
+//
+function buildAttrFromScan() {
+  if (!nodes || !nodes.length) return false;
+
+  // ── Step 1: group assets by their cluster signal ──────────
+  // Use cluster ID + pivot as the signal key.
+  // Fall back to explicit signal fields for unclustered assets.
+  var hubMap = {};   // key → {type, value, label, color, assetIds:[]}
+
+  function addToHub(key, type, value, label, assetId) {
+    if (!value || value === '0' || value === 'AS0') return;
+    var col = ATTR_SIGNAL_COLORS[type] || '#bfcfe3';
+    if (!hubMap[key]) hubMap[key] = { key: key, type: type, value: value, label: label, color: col, assetIds: [] };
+    if (hubMap[key].assetIds.indexOf(assetId) < 0) hubMap[key].assetIds.push(assetId);
+  }
+
+  nodes.forEach(function(n) {
+    // Cluster-based signal (already computed by Go pipeline)
+    if (n.cluster && n.pivot) {
+      var label = n.cluster_label || n.cluster;
+      addToHub('clust:' + n.cluster, n.pivot, n.cluster, label, n.id);
+    }
+    // Explicit signal fields — includes unclustered assets (e.g. raw IPs from FOFA)
+    if (n.favicon_hash && n.favicon_hash !== '0') {
+      addToHub('fav:' + n.favicon_hash, 'favicon_hash', n.favicon_hash, 'favicon:' + n.favicon_hash.slice(0,8), n.id);
+    }
+    if (n.header_hash && n.header_hash !== '0') {
+      addToHub('hh:' + n.header_hash, 'header_hash', n.header_hash, 'header:' + n.header_hash.slice(0,8), n.id);
+    }
+    if (n.jarm && n.jarm.length > 8) {
+      addToHub('jarm:' + n.jarm, 'jarm', n.jarm, 'jarm:' + n.jarm.slice(0,12) + '…', n.id);
+    }
+    if (n.asn && n.asn !== 'AS0') {
+      addToHub('asn:' + n.asn, 'asn', n.asn, n.asn, n.id);
+    }
+  });
+
+  // ── Step 2: discard single-asset hubs (not attribution) ───
+  var hubs = Object.values(hubMap).filter(function(h) { return h.assetIds.length >= 2; });
+  if (!hubs.length) return false;
+
+  // ── Step 3: layout ─────────────────────────────────────────
+  // Hubs form an inner ring; satellites orbit their primary hub.
+  var cx = attrW / 2, cy = attrH / 2;
+  var hubR = Math.min(attrW, attrH) * 0.22;
+  attrN = [];
+  attrE = [];
+
+  // Hub nodes
+  hubs.forEach(function(h, i) {
+    var angle = (i / hubs.length) * Math.PI * 2;
+    attrN.push({
+      id:       'hub:' + h.key,
+      isHub:    true,
+      hubKey:   h.key,
+      sigType:  h.type,
+      sigValue: h.value,
+      label:    h.label,
+      color:    h.color,
+      assetIds: h.assetIds,
+      r:        Math.max(20, Math.min(44, 14 + h.assetIds.length * 2.2)),
+      x:        cx + Math.cos(angle) * hubR,
+      y:        cy + Math.sin(angle) * hubR,
+      vx: 0, vy: 0,
+      pulse: Math.random() * Math.PI * 2,
+    });
+  });
+
+  // Asset satellite nodes — only assets that belong to at least one hub
+  var assetInHub = {};
+  hubs.forEach(function(h) {
+    h.assetIds.forEach(function(id) { assetInHub[id] = true; });
+  });
+
+  var satMap = {}; // scanNodeId → attrN satellite node
+  nodes.forEach(function(n) {
+    if (!assetInHub[n.id]) return;
+    // Find primary hub (first hub that contains this asset)
+    var primaryHub = null;
+    for (var hi = 0; hi < attrN.length; hi++) {
+      if (attrN[hi].assetIds.indexOf(n.id) >= 0) { primaryHub = attrN[hi]; break; }
+    }
+    if (!primaryHub) return;
+    var jitter = Math.random() * Math.PI * 2;
+    var satR   = primaryHub.r + 40 + Math.random() * 40;
+    var satNode = {
+      id:        'sat:' + n.id,
+      isSat:     true,
+      scanId:    n.id,
+      label:     n.host || n.ip || String(n.id),
+      color:     n.color || '#bfcfe3',
+      r:         4,
+      x:         primaryHub.x + Math.cos(jitter) * satR,
+      y:         primaryHub.y + Math.sin(jitter) * satR,
+      vx: 0, vy: 0,
+      pulse: Math.random() * Math.PI * 2,
+    };
+    attrN.push(satNode);
+    satMap[n.id] = satNode;
+  });
+
+  // ── Step 4: edges ─────────────────────────────────────────
+  // Hub → satellite edges
+  hubs.forEach(function(h) {
+    var hubNode = attrN.find(function(an) { return an.hubKey === h.key; });
+    if (!hubNode) return;
+    h.assetIds.forEach(function(assetId) {
+      var sat = satMap[assetId];
+      if (sat) {
+        attrE.push({ from: hubNode, to: sat, type: 'hub-sat', color: h.color, strength: 0.6 });
+      }
+    });
+  });
+
+  // Hub ↔ hub edges — when they share an asset (infrastructure overlap)
+  for (var i = 0; i < hubs.length; i++) {
+    for (var j = i+1; j < hubs.length; j++) {
+      var shared = hubs[i].assetIds.filter(function(id) {
+        return hubs[j].assetIds.indexOf(id) >= 0;
+      });
+      if (shared.length > 0) {
+        var hi = attrN.find(function(an) { return an.hubKey === hubs[i].key; });
+        var hj = attrN.find(function(an) { return an.hubKey === hubs[j].key; });
+        if (hi && hj) {
+          var conf = Math.min(1, shared.length / Math.min(hubs[i].assetIds.length, hubs[j].assetIds.length));
+          attrE.push({ from: hi, to: hj, type: 'hub-hub', color: '#c0d0e4', strength: conf, sharedCount: shared.length });
+        }
+      }
+    }
+  }
+
+  attrLayoutStable = false;
+  attrLoaded = true;
+
+  var emptyEl = document.getElementById('attr-empty');
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  var hubCount = hubs.length;
+  var satCount = Object.keys(satMap).length;
+  var overlapEdges = attrE.filter(function(e) { return e.type === 'hub-hub'; }).length;
+  updateAttrHUD(hubCount, satCount, overlapEdges);
+  addLog('attr: ' + hubCount + ' signal hubs · ' + satCount + ' assets · ' + overlapEdges + ' overlaps');
+  return true;
+}
+
+function updateAttrHUD(hubs, assets, overlaps) {
+  var el = document.getElementById('attr-info');
+  if (!el) return;
+  el.textContent = hubs + ' signal hubs  ·  ' + assets + ' assets  ·  ' + overlaps + ' infrastructure overlaps';
+  el.style.display = 'block';
+}
+
+// ─── Force simulation ────────────────────────────────────────
+function attrSimStep() {
+  if (attrLayoutStable) return;
+
+  var hubs = attrN.filter(function(n) { return n.isHub; });
+  var sats = attrN.filter(function(n) { return n.isSat; });
+  var maxV = 0;
+
+  // Hub↔hub repulsion
+  for (var i = 0; i < hubs.length; i++) {
+    for (var j = i+1; j < hubs.length; j++) {
+      var a = hubs[i], b = hubs[j];
+      var dx = b.x-a.x, dy = b.y-a.y, d2 = dx*dx+dy*dy+1, d = Math.sqrt(d2);
+      var f = ATTR_SIM.hubRepel / d2;
+      a.vx -= f*dx/d; a.vy -= f*dy/d;
+      b.vx += f*dx/d; b.vy += f*dy/d;
+    }
+  }
+
+  // Satellite↔satellite soft repulsion (within same hub cluster)
+  for (var i = 0; i < sats.length; i++) {
+    for (var j = i+1; j < sats.length; j++) {
+      var a = sats[i], b = sats[j];
+      var dx = b.x-a.x, dy = b.y-a.y, d2 = dx*dx+dy*dy+1, d = Math.sqrt(d2);
+      if (d < 30) {
+        var f = ATTR_SIM.satRepel / d2;
+        a.vx -= f*dx/d; a.vy -= f*dy/d;
+        b.vx += f*dx/d; b.vy += f*dy/d;
+      }
+    }
+  }
+
+  // Spring forces along edges
+  attrE.forEach(function(e) {
+    var a = e.from, b = e.to;
+    var dx = b.x-a.x, dy = b.y-a.y, d = Math.sqrt(dx*dx+dy*dy)+1;
+    var rest = e.type === 'hub-hub' ? ATTR_SIM.restLen * 2.2 : ATTR_SIM.restLen;
+    var f = ATTR_SIM.spring * (d - rest) * (e.strength || 0.5);
+    // Only satellites move toward hubs; hubs are moved by hub-hub springs
+    if (e.type === 'hub-sat') {
+      b.vx += f*dx/d; b.vy += f*dy/d;
+      a.vx += (f*dx/d) * 0.15; a.vy += (f*dy/d) * 0.15;
+    } else {
+      a.vx += f*dx/d; a.vy += f*dy/d;
+      b.vx -= f*dx/d; b.vy -= f*dy/d;
+    }
+  });
+
+  // Integrate
+  attrN.forEach(function(n) {
+    if (n === attrDragging) return;
+    n.vx += (attrW/2 - n.x) * ATTR_SIM.grav;
+    n.vy += (attrH/2 - n.y) * ATTR_SIM.grav;
+    n.vx *= ATTR_SIM.damp; n.vy *= ATTR_SIM.damp;
+    n.x += n.vx; n.y += n.vy;
+    var pad = n.r + 8;
+    n.x = Math.max(pad, Math.min(attrW - pad, n.x));
+    n.y = Math.max(pad, Math.min(attrH - pad, n.y));
+    maxV = Math.max(maxV, Math.abs(n.vx), Math.abs(n.vy));
+  });
+
+  if (maxV < 0.07) attrLayoutStable = true;
+}
+
+// ─── Drawing ─────────────────────────────────────────────────
+function drawAttr() {
+  if (!attrCtx || !attrCanvas) return;
+  attrCtx.save();
+  attrCtx.clearRect(0, 0, attrW, attrH);
+  attrCtx.translate(attrCamX, attrCamY);
+  attrCtx.scale(attrCamZ, attrCamZ);
+
+  if (!attrN.length) { attrCtx.restore(); return; }
+
+  attrSimStep();
+
+  // Draw hub-hub overlap edges first (behind everything)
+  attrE.forEach(function(e) {
+    if (e.type !== 'hub-hub') return;
+    var conf = e.strength || 0.4;
+    var al   = Math.round(conf * 160).toString(16).padStart(2,'0');
+    attrCtx.strokeStyle = e.color + al;
+    attrCtx.lineWidth   = Math.max(1.5, conf * 5);
+    attrCtx.lineCap     = 'round';
+    attrCtx.setLineDash([6, 5]);
+    attrCtx.beginPath();
+    attrCtx.moveTo(e.from.x, e.from.y);
+    attrCtx.lineTo(e.to.x,   e.to.y);
+    attrCtx.stroke();
+    attrCtx.setLineDash([]);
+    // Shared-count badge at midpoint
+    var mx = (e.from.x + e.to.x) / 2, my = (e.from.y + e.to.y) / 2;
+    attrCtx.font      = '8px JetBrains Mono, monospace';
+    attrCtx.fillStyle = '#c0d0e4aa';
+    attrCtx.textAlign = 'center';
+    attrCtx.fillText(e.sharedCount + ' shared', mx, my - 4);
+    attrCtx.textAlign = 'left';
+  });
+
+  // Draw hub→satellite edges
+  attrE.forEach(function(e) {
+    if (e.type !== 'hub-sat') return;
+    var isSel = e.to === attrSel || e.from === attrSel;
+    attrCtx.strokeStyle = e.color + (isSel ? 'bb' : '38');
+    attrCtx.lineWidth   = isSel ? 1.5 : 0.8;
+    attrCtx.lineCap     = 'round';
+    attrCtx.beginPath();
+    attrCtx.moveTo(e.from.x, e.from.y);
+    attrCtx.lineTo(e.to.x,   e.to.y);
+    attrCtx.stroke();
+  });
+
+  // Draw satellite asset dots
+  attrN.forEach(function(n) {
+    if (!n.isSat) return;
+    n.pulse = (n.pulse || 0) + 0.04;
+    var isSel = n === attrSel, isHov = n === attrHov;
+    var pr = n.r + (isSel ? 3 : 0);
+    attrCtx.fillStyle = isSel ? n.color : (isHov ? n.color + 'ee' : n.color + 'aa');
+    attrCtx.beginPath(); attrCtx.arc(n.x, n.y, pr, 0, Math.PI*2); attrCtx.fill();
+    if (isSel || isHov) {
+      attrCtx.strokeStyle = n.color; attrCtx.lineWidth = 1.2;
+      attrCtx.stroke();
+      // Label
+      attrCtx.font      = '9px JetBrains Mono, monospace';
+      attrCtx.fillStyle = '#ffffff';
+      attrCtx.textAlign = 'center';
+      attrCtx.fillText(n.label, n.x, n.y - pr - 5);
+      attrCtx.textAlign = 'left';
+    }
+  });
+
+  // Draw signal hub nodes (on top)
+  attrN.forEach(function(n) {
+    if (!n.isHub) return;
+    n.pulse = (n.pulse || 0) + 0.018;
+    var isSel = n === attrSel, isHov = n === attrHov;
+    var pr    = n.r + Math.sin(n.pulse) * (isSel ? 3 : 1);
+
+    // Outer glow
+    var g = attrCtx.createRadialGradient(n.x, n.y, 0, n.x, n.y, pr * 3.2);
+    g.addColorStop(0, n.color + (isSel ? '55' : '22'));
+    g.addColorStop(1, n.color + '00');
+    attrCtx.fillStyle = g;
+    attrCtx.beginPath(); attrCtx.arc(n.x, n.y, pr * 3.2, 0, Math.PI*2); attrCtx.fill();
+
+    // Circle body
+    attrCtx.fillStyle   = isSel ? n.color : (isHov ? n.color + 'ee' : n.color + 'bb');
+    attrCtx.beginPath(); attrCtx.arc(n.x, n.y, pr, 0, Math.PI*2); attrCtx.fill();
+    attrCtx.strokeStyle = n.color + (isSel ? 'ff' : 'cc');
+    attrCtx.lineWidth   = isSel ? 2.5 : 1.8;
+    attrCtx.stroke();
+
+    // Asset count badge (centre)
+    attrCtx.font      = 'bold 11px JetBrains Mono, monospace';
+    attrCtx.fillStyle = isSel ? '#06090f' : '#ffffff';
+    attrCtx.textAlign = 'center';
+    attrCtx.fillText(n.assetIds.length, n.x, n.y + 4);
+
+    // Signal type label (top)
+    attrCtx.font      = '8px JetBrains Mono, monospace';
+    attrCtx.fillStyle = n.color + (isSel ? 'ff' : 'bb');
+    attrCtx.fillText(n.sigType, n.x, n.y - pr - 16);
+
+    // Cluster / signal label (bottom)
+    attrCtx.font      = '9px JetBrains Mono, monospace';
+    attrCtx.fillStyle = isSel ? '#ffffff' : (isHov ? '#c0d0e4' : '#6a8aab');
+    var lbl = n.label.length > 22 ? n.label.slice(0, 20) + '…' : n.label;
+    attrCtx.fillText(lbl, n.x, n.y + pr + 14);
+    attrCtx.textAlign = 'left';
+
+    // Selected dashed ring
+    if (isSel) {
+      attrCtx.strokeStyle = n.color + '66';
+      attrCtx.lineWidth   = 1;
+      attrCtx.setLineDash([3,4]);
+      attrCtx.beginPath(); attrCtx.arc(n.x, n.y, pr + 9, 0, Math.PI*2); attrCtx.stroke();
+      attrCtx.setLineDash([]);
+    }
+  });
+
+  attrCtx.restore();
+}
+
+// ─── Node card for ATTR mode ─────────────────────────────────
+function selectAttrNode(an) {
+  attrSel = an;
+  var card = document.getElementById('node-card');
+  if (!card) return;
+  var cachePanel = document.getElementById('cache-panel');
+
+  if (!an) {
+    card.classList.add('hidden');
+    if (cachePanel) cachePanel.style.display = '';
+    return;
+  }
+  if (cachePanel) cachePanel.style.display = 'none';
+
+  var bar = document.getElementById('nc-bar');
+
+  if (an.isHub) {
+    // ── Signal hub card ────────────────────────────────────
+    if (bar) bar.style.background = an.color;
+
+    ncTxt('nc-title',    an.label);
+    ncTxt('nc-subtitle', an.sigType + '  ·  ' + an.assetIds.length + ' assets');
+
+    ncSet('nc-status',  an.sigValue.slice(0, 24) + (an.sigValue.length > 24 ? '…' : ''), '');
+    ncSet('nc-port',    '—', '');
+    ncSet('nc-pivot',   an.sigType, '');
+    ncSet('nc-cluster', '—', '');
+    ncSet('nc-asn',     '—', '');
+    ncSet('nc-jarm',    an.sigType === 'jarm' ? an.sigValue.slice(0,24) + '…' : '—', '');
+    ncSet('nc-country', '—', '');
+    ncSet('nc-geo',     '—', '');
+    ncSet('nc-source',  'signal hub', '');
+
+    var bdg = document.getElementById('nc-badges');
+    if (bdg) {
+      bdg.innerHTML = '<span class="nc-badge" style="color:' + an.color + ';border-color:' + an.color + '44">' + an.sigType + '</span>';
+    }
+
+    // Relations: the asset nodes attached to this hub
+    var relsEl = document.getElementById('nc-rels');
+    if (relsEl) {
+      var members = nodes.filter(function(n) { return an.assetIds.indexOf(n.id) >= 0; });
+      members.sort(function(a,b) { return (b.score||0) - (a.score||0); });
+      if (!members.length) {
+        relsEl.innerHTML = '<div class="nc-rel-empty">no assets</div>';
+      } else {
+        relsEl.innerHTML = '<div class="nc-rel-hdr">assets sharing this signal (' + members.length + ')</div>' +
+          members.map(function(m) {
+            return '<div class="nc-rel-item" onclick="jumpToAsset(' + m.id + ')">' +
+              '<div class="nc-rel-dot" style="background:' + m.color + '"></div>' +
+              '<span class="nc-rel-name">' + (m.host || m.ip || String(m.id)) + '</span>' +
+              '<span class="nc-rel-via">' + (m.country || m.asn || '') + '</span>' +
+              '</div>';
+          }).join('');
+      }
+    }
+
+  } else if (an.isSat) {
+    // ── Asset satellite card: proxy to the scan node card ──
+    var scanNode = nodes.find(function(n) { return n.id === an.scanId; });
+    if (scanNode) { selectNode(scanNode); return; }
+    if (bar) bar.style.background = an.color;
+    ncTxt('nc-title',    an.label);
+    ncTxt('nc-subtitle', 'asset');
+    ncSet('nc-source',   'scan asset', '');
+  }
+
+  card.classList.remove('hidden');
+}
+
+// Jump to asset: switch to 2D mode and highlight the node
+function jumpToAsset(id) {
+  selectAttrNode(null);
+  setMode('2d');
+  var n = nodes.find(function(x) { return x.id === id; });
+  if (n) { setTimeout(function() { selectNode(n); }, 80); }
+}
+
+function pickAttrNode(id) {
+  var n = attrN.find(function(x) { return x.id === id; });
+  if (n) selectAttrNode(n);
+}
+
+function getAttrNodeAt(mx, my) {
+  var wx = (mx - attrCamX) / attrCamZ;
+  var wy = (my - attrCamY) / attrCamZ;
+  var best = null, bestD = Infinity;
+  attrN.forEach(function(n) {
+    var d = Math.hypot(n.x - wx, n.y - wy);
+    if (d < n.r + 10 && d < bestD) { bestD = d; best = n; }
+  });
+  return best;
+}
+
+function resizeAttr() {
+  if (!attrCanvas) return;
+  attrW = attrCanvas.clientWidth  || 800;
+  attrH = attrCanvas.clientHeight || 600;
+  attrCanvas.width  = attrW * devicePixelRatio;
+  attrCanvas.height = attrH * devicePixelRatio;
+  attrCtx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  attrLayoutStable = false;
+}
+
+function wireAttrEvents() {
+  if (!attrCanvas) return;
+
+  attrCanvas.addEventListener('mousemove', function(e) {
+    if (mode !== 'attr') return;
+    var r  = attrCanvas.getBoundingClientRect();
+    var mx = e.clientX - r.left, my = e.clientY - r.top;
+    if (attrDragging) {
+      var wx = (mx - attrCamX) / attrCamZ, wy = (my - attrCamY) / attrCamZ;
+      attrDragging.x = wx + attrDragOff.x;
+      attrDragging.y = wy + attrDragOff.y;
+      attrDragging.vx = 0; attrDragging.vy = 0;
+      attrLayoutStable = false;
+      return;
+    }
+    if (attrPanning) {
+      attrCamX = attrPanOrigin.x + (mx - attrPanStart.x);
+      attrCamY = attrPanOrigin.y + (my - attrPanStart.y);
+      return;
+    }
+    attrHov = getAttrNodeAt(mx, my);
+    attrCanvas.style.cursor = attrHov ? 'pointer' : 'default';
+  });
+
+  attrCanvas.addEventListener('mousedown', function(e) {
+    if (mode !== 'attr') return;
+    var r  = attrCanvas.getBoundingClientRect();
+    var mx = e.clientX - r.left, my = e.clientY - r.top;
+    var n  = getAttrNodeAt(mx, my);
+    if (n) {
+      var wx = (mx - attrCamX) / attrCamZ, wy = (my - attrCamY) / attrCamZ;
+      attrDragging = n; attrDragOff = { x: n.x - wx, y: n.y - wy };
+    } else {
+      attrPanning = true;
+      attrPanStart  = { x: mx, y: my };
+      attrPanOrigin = { x: attrCamX, y: attrCamY };
+    }
+  });
+
+  attrCanvas.addEventListener('mouseup', function(e) {
+    if (mode !== 'attr') return;
+    var r  = attrCanvas.getBoundingClientRect();
+    var mx = e.clientX - r.left, my = e.clientY - r.top;
+    if (attrDragging) {
+      var wx = (mx - attrCamX) / attrCamZ, wy = (my - attrCamY) / attrCamZ;
+      if (Math.hypot(attrDragging.x - (wx + attrDragOff.x), attrDragging.y - (wy + attrDragOff.y)) < 4) {
+        selectAttrNode(attrDragging);
+      }
+    } else if (!attrPanning || Math.hypot(mx - attrPanStart.x, my - attrPanStart.y) < 4) {
+      var clicked = getAttrNodeAt(mx, my);
+      selectAttrNode(clicked || null);
+    }
+    attrDragging = null; attrPanning = false;
+  });
+
+  attrCanvas.addEventListener('mouseleave', function() { attrDragging = null; attrPanning = false; });
+
+  attrCanvas.addEventListener('wheel', function(e) {
+    if (mode !== 'attr') return;
+    e.preventDefault();
+    var r   = attrCanvas.getBoundingClientRect();
+    var mx  = e.clientX - r.left, my = e.clientY - r.top;
+    var fac = e.deltaY < 0 ? 1.12 : 0.89;
+    var nz  = Math.max(0.2, Math.min(4.0, attrCamZ * fac));
+    attrCamX = mx - (mx - attrCamX) * nz / attrCamZ;
+    attrCamY = my - (my - attrCamY) * nz / attrCamZ;
+    attrCamZ = nz;
+  }, { passive: false });
 }
 
 // Export globals needed by HTML onclick attributes
@@ -1510,5 +2136,6 @@ window.zoomFit       = zoomFit;
 window.clearCache    = clearCache;
 window.exportPNG     = exportPNG;
 window.pickNode      = pickNode;
+window.pickAttrNode  = pickAttrNode;
 
 `

@@ -13,6 +13,7 @@ import (
 	"github.com/yourusername/inframapper/internal/model"
 	"github.com/yourusername/inframapper/internal/pivot"
 	"github.com/yourusername/inframapper/internal/sec"
+	"github.com/yourusername/inframapper/internal/store"
 	"github.com/yourusername/inframapper/internal/web"
 )
 
@@ -103,8 +104,12 @@ func main() {
 	flag.StringVar(&cfg.OutputDir, "output", cfg.OutputDir, "Direktori output")
 	outputFormats := flag.String("format", "json,markdown", "Format output: json,csv,markdown (comma-separated)")
 
-	exposePort := flag.Int("expose", 0, "Aktifkan Neural Graph UI di port ini (contoh: --expose 3221)")
-	viewFile   := flag.String("view", "", "Tampilkan hasil scan yang sudah ada di GUI tanpa re-scan.\n\tContoh: --view output/garuda-indonesia.com_20260401-050959.json --expose 3221")
+	exposePort  := flag.Int("expose", 0, "Aktifkan Neural Graph UI di port ini (contoh: --expose 3221)")
+	viewFile    := flag.String("view", "", "Tampilkan hasil scan yang sudah ada di GUI tanpa re-scan.\n\tContoh: --view output/garuda-indonesia.com_20260401-050959.json --expose 3221")
+	storeFlag   := flag.Bool("store", false, "Aktifkan persistensi sinyal untuk attribution graph lintas-target")
+	storeDB     := flag.String("db", cfg.StorePath, "Path ke file attribution store (JSON)")
+	attrOnly    := flag.Bool("attr-only", false, "Hanya jalankan GUI attribution (skip scan). Butuh --expose dan --store data yang sudah ada.")
+	minConfFlag := flag.Float64("min-conf", cfg.MinConfidence, "Minimum confidence untuk korelasi ditampilkan di ATTR mode")
 
 	flag.BoolVar(&cfg.Verbose, "v", cfg.Verbose, "Verbose logging")
 	flag.BoolVar(&cfg.Debug, "debug", cfg.Debug, "Debug logging (lebih detail dari -v)")
@@ -189,8 +194,12 @@ Scope:
 	// ─────────────────────────────────────────────────────────────────
 	// STEP 5: Validasi
 	// ─────────────────────────────────────────────────────────────────
-	if cfg.Target == "" && *viewFile == "" {
-		fmt.Fprintf(os.Stderr, "Error: -target wajib diisi (atau gunakan -view <file.json> untuk replay hasil scan)\n\n")
+	cfg.StoreEnabled  = *storeFlag
+	cfg.StorePath     = *storeDB
+	cfg.MinConfidence = *minConfFlag
+
+	if cfg.Target == "" && *viewFile == "" && !*attrOnly {
+		fmt.Fprintf(os.Stderr, "Error: -target wajib diisi (atau gunakan -view <file.json> atau --attr-only untuk GUI)\n\n")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -247,16 +256,52 @@ Scope:
 	// dengan interface nil — sehingga nil-check di webPush() akan selalu
 	// true dan menyebabkan nil pointer dereference saat Push() dipanggil.
 	// ─────────────────────────────────────────────────────────────────
+	// ─────────────────────────────────────────────────────────────────
+	// ATTRIBUTION STORE (opsional — aktif hanya jika --store diberikan)
+	// ─────────────────────────────────────────────────────────────────
+	var attrStore *store.Store
+	if cfg.StoreEnabled || *attrOnly {
+		s, err := store.Open(cfg.StorePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[store] gagal buka %s: %v\n", cfg.StorePath, err)
+			// Non-fatal — lanjut tanpa attribution
+		} else {
+			attrStore = s
+			if cfg.Verbose {
+				log.Printf("[store] attribution store: %s", cfg.StorePath)
+			}
+		}
+	}
+
 	var webPusher pivot.WebPusher // nil interface murni secara default
 	var webSrv *web.Server        // hanya untuk hold reference (kept alive)
 	if *exposePort > 0 {
 		webSrv = web.New(*exposePort)
+		if attrStore != nil {
+			webSrv.SetStore(attrStore)
+		}
 		if err := webSrv.Start(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "[web] gagal start: %v\n", err)
 			webSrv = nil // Non-fatal — webPusher tetap nil interface
 		} else {
 			webPusher = webSrv // assign ke interface hanya jika sukses
 		}
+	}
+
+	// ─────────────────────────────────────────────────────────────────
+	// ATTR-ONLY MODE: tampilkan attribution GUI tanpa menjalankan scan
+	// ─────────────────────────────────────────────────────────────────
+	if *attrOnly {
+		if webSrv == nil {
+			fmt.Fprintf(os.Stderr, "Error: --attr-only membutuhkan --expose <port>\n")
+			fmt.Fprintf(os.Stderr, "  Contoh: inframapper --attr-only --expose 3221 --db ./inframapper_attr.json\n")
+			os.Exit(1)
+		}
+		fmt.Printf("\n[attr] Attribution GUI aktif — %s\n", cfg.StorePath)
+		fmt.Printf("[web]  Neural Graph UI → http://localhost:%d  (tekan 4 untuk ATTR mode)\n", *exposePort)
+		fmt.Println("[web]  Tekan Ctrl+C untuk keluar.")
+		<-ctx.Done()
+		return
 	}
 
 	// ─────────────────────────────────────────────────────────────────
@@ -279,7 +324,13 @@ Scope:
 		return
 	}
 
-	result, err := pivot.Run(ctx, cfg, webPusher)
+	// StoreSaver: pivot.StoreSaver interface — nil jika attribution tidak aktif
+	var storeSaver pivot.StoreSaver
+	if attrStore != nil {
+		storeSaver = attrStore
+	}
+
+	result, err := pivot.Run(ctx, cfg, webPusher, storeSaver)
 	if err != nil {
 		if ctx.Err() != nil {
 			fmt.Println("[!] Pipeline dihentikan oleh user")
